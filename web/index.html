@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#171715">
   <meta name="description" content="A connected workspace for Colibri. Chat, run supervised agent tasks, and inspect your server workspace.">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="referrer" content="no-referrer">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -13,8 +13,8 @@
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
-  <link rel="stylesheet" href="./styles.css?v=1">
-  <script type="module" src="./app.js?v=2"></script>
+  <link rel="stylesheet" href="./styles.css?v=2">
+  <script type="module" src="./app.js?v=3"></script>
 </head>
 <body data-view="workspace">
   <a class="skip-link" href="#prompt">Skip to message</a>
@@ -54,11 +54,15 @@
         <div class="conversation-heading"><div><span class="eyebrow">COLIBRI / <span id="mode-caption">CHAT</span></span><h1 id="session-title">A little space to build.</h1></div><span id="run-status" class="run-status" role="status">Ready when connected</span></div>
         <div id="timeline" class="timeline" role="log" aria-label="Conversation and real tool activity" aria-live="polite" aria-relevant="additions"></div>
         <form id="composer" class="composer">
-          <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><span id="mode-description" class="hint">Talk to the engine. No tools.</span></div>
+          <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><div class="toolbar-tools"><span id="mode-description" class="hint">Talk to the engine. No tools.</span><button id="attach-button" class="quiet-button" type="button" title="Attach a text file">Attach</button><button id="image-button" class="quiet-button" type="button" title="Attach one image for vision">Image</button><button id="mic-button" class="quiet-button" type="button" title="Dictate with the local microphone">Mic</button></div></div>
           <fieldset id="agent-permissions" class="permissions" hidden><legend>Permissions for this run only</legend><label class="check-row"><input id="allow-write" type="checkbox">Allow file writes</label><label class="check-row"><input id="allow-shell" type="checkbox">Allow commands</label><p class="warning">Commands are NOT sandboxed. They run with the server user's permissions and can modify files even when file writes are off. Enable only on a trusted server for a task you understand.</p></fieldset>
           <label for="prompt" class="sr-only">Message or agent task</label>
-          <textarea id="prompt" rows="3" maxlength="32000" placeholder="What would you like to work on?" required></textarea>
-          <div class="composer-bottom"><details id="generation-settings" class="generation-settings"><summary>Chat settings</summary><div><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="8192" step="1" value="1024" required><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" required></div></details><span id="agent-limit" class="hint" hidden>Up to 14 steps · root workspace only</span><div class="button-row"><button id="stop-button" class="stop-button" type="button" hidden>Stop</button><button id="send-button" class="primary-button" type="submit" disabled>Send message <span aria-hidden="true">↑</span></button></div></div>
+          <input id="attach-file" type="file" hidden accept=".txt,.md,.json,.js,.jsx,.ts,.tsx,.css,.html,.py,.rs,.go,.java,.c,.h,.cpp,.yaml,.yml,.toml,.sh,.sql,.csv">
+          <input id="attach-image" type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif">
+          <div id="attachment-chips" class="chips" hidden></div>
+          <textarea id="prompt" rows="3" maxlength="32000" placeholder="What would you like to work on? Paste an image or use Attach, Image and Mic." required></textarea>
+          <p id="composer-notice" class="notice" role="status" hidden></p>
+          <div class="composer-bottom"><details id="generation-settings" class="generation-settings"><summary>Chat settings</summary><div><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="8192" step="1" value="1024" required><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" required><label for="thinking">Reasoning</label><select id="thinking"><option value="default">Server default</option><option value="off">Off</option><option value="high">High</option></select></div></details><span id="agent-limit" class="hint" hidden>Up to 14 steps · root workspace only</span><div class="button-row"><button id="stop-button" class="stop-button" type="button" hidden>Stop</button><button id="send-button" class="primary-button" type="submit" disabled>Send message <span aria-hidden="true">↑</span></button></div></div>
           <p id="composer-error" class="error-text" role="alert" hidden></p>
           <p class="composer-note">Responses are not verification. Inspect actual tool output before trusting a result.</p>
         </form>

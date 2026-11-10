@@ -1,4 +1,4 @@
-import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parsePoll, pollWithinBounds, canInstallSecurely, delay } from './helpers.js?v=1';
+import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=2';
 
 const $ = id => document.getElementById(id);
 const TOKEN_KEY = 'colibri.workspace.tab-token';
@@ -22,6 +22,12 @@ let directory = '';
 let activeRun = null;
 let installPrompt = null;
 let sequence = 0;
+let attachments = [];
+let imageAttachment = null;
+let recording = null;
+let sttBusy = false;
+let speech = null;
+let noticeTimer;
 
 const safe = value => redact(value, token);
 function showError(id, message = '') {
@@ -34,6 +40,145 @@ function node(tag, className, text) {
   if (text !== undefined) element.textContent = safe(text);
   return element;
 }
+function showNotice(message = '') {
+  clearTimeout(noticeTimer);
+  $('composer-notice').textContent = safe(message);
+  $('composer-notice').hidden = !message;
+  if (message) noticeTimer = setTimeout(() => showNotice(), 15000);
+}
+function renderChips() {
+  const box = $('attachment-chips');
+  box.replaceChildren();
+  const chips = attachments.map(file => ({
+    kind: 'text', name: file.name,
+    remove: () => { attachments = attachments.filter(entry => entry !== file); renderChips(); },
+  }));
+  if (imageAttachment) chips.push({
+    kind: 'image', name: imageAttachment.name, src: imageAttachment.dataUrl,
+    remove: () => { imageAttachment = null; renderChips(); },
+  });
+  for (const chip of chips) {
+    const element = node('span', `chip chip-${chip.kind}`);
+    if (chip.src) {
+      const preview = node('img', 'chip-preview');
+      preview.src = chip.src; preview.alt = '';
+      element.append(preview);
+    }
+    element.append(node('span', 'chip-name', chip.name));
+    const remove = node('button', 'chip-remove', '×');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `Remove ${chip.name}`);
+    remove.addEventListener('click', chip.remove);
+    element.append(remove);
+    box.append(element);
+  }
+  box.hidden = !chips.length;
+  updateControls();
+}
+function clearAttachments() {
+  attachments = [];
+  imageAttachment = null;
+  renderChips();
+}
+function updateMic() {
+  const button = $('mic-button');
+  button.textContent = recording ? 'Stop dictation' : sttBusy ? 'Transcribing…' : 'Mic';
+  button.classList.toggle('recording', Boolean(recording));
+  button.disabled = Boolean(activeRun) || sttBusy || !connected || !navigator.onLine;
+}
+async function addTextFile(file) {
+  showNotice();
+  if (file.size > 1_000_000) { showNotice('Text attachments must be at most 1 MB.'); return; }
+  if (attachments.length >= 3) { showNotice('At most three text attachments per message.'); return; }
+  try {
+    const text = await file.text();
+    if (text.includes('\0')) { showNotice('That looks like a binary file; attach text or an image.'); return; }
+    const content = text.length > 24000 ? `${text.slice(0, 24000)}\n… truncated` : text;
+    attachments = [...attachments.filter(entry => entry.name !== file.name), { name: file.name.slice(0, 120), content }];
+    renderChips();
+  } catch (error) {
+    showNotice(`Could not read that file: ${error.message}`);
+  }
+}
+async function addImageFile(file) {
+  showNotice();
+  if (!/^image\/(png|jpe?g|webp|gif)$/i.test(file.type)) { showNotice('Use a PNG, JPEG, WebP or GIF image.'); return; }
+  if (file.size > LIMITS.imageBytes) { showNotice('Images must be at most 6 MB.'); return; }
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    if (!isImageDataUrl(dataUrl)) throw new Error('the browser produced an unexpected data URL');
+    imageAttachment = { name: file.name.slice(0, 120), dataUrl };
+    renderChips();
+  } catch (error) {
+    showNotice(`Could not read that image: ${error.message}`);
+  }
+}
+function stopSpeech() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  if (speech) speech.button.textContent = 'Read aloud';
+  speech = null;
+}
+function toggleSpeech(item, button) {
+  if (!('speechSynthesis' in window)) { showNotice('This browser has no speech synthesis.'); return; }
+  if (speech?.id === item.id) { stopSpeech(); return; }
+  stopSpeech();
+  const text = String(item.content || '').replace(/```[\s\S]*?```/g, ' code block ').slice(0, 20000);
+  if (!text.trim()) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.03;
+  utterance.lang = 'en-US';
+  utterance.onend = utterance.onerror = () => { if (speech?.id === item.id) stopSpeech(); };
+  speech = { id: item.id, button };
+  button.textContent = 'Stop reading';
+  window.speechSynthesis.speak(utterance);
+}
+async function toggleMic() {
+  showNotice();
+  if (recording) { recording.recorder.stop(); return; }
+  if (!connected || !navigator.onLine) { showNotice('Connect to the server before dictating.'); return; }
+  if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) { showNotice('This browser cannot record audio.'); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find(type => MediaRecorder.isTypeSupported(type)) || '';
+    const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(track => track.stop());
+      recording = null; updateControls(); updateMic();
+      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+      if (!blob.size || !connected) return;
+      sttBusy = true; updateControls(); updateMic();
+      try {
+        const data = await api('/api/stt', {
+          method: 'POST', body: blob, raw: true, contentType: blob.type || 'audio/webm',
+          timeout: 180000, allowEmpty: true,
+        });
+        const transcript = parseStt(data);
+        if (transcript.text) {
+          const existing = $('prompt').value;
+          $('prompt').value = `${existing.trimEnd()}${existing.trim() ? ' ' : ''}${transcript.text}`.slice(0, 32000);
+          $('prompt').focus();
+        } else showNotice('No speech was recognized.');
+      } catch (error) {
+        reportApiFailure(error);
+        showNotice(`Speech recognition failed: ${error.message}`);
+      } finally {
+        sttBusy = false; updateControls(); updateMic();
+      }
+    };
+    recorder.start();
+    recording = { recorder, stream };
+    updateControls(); updateMic();
+  } catch (error) {
+    showNotice(`Microphone unavailable: ${error.message}`);
+  }
+}
 function setStatus(message, session = current) {
   session.status = safe(message);
   if (session === current) $('run-status').textContent = session.status;
@@ -42,7 +187,8 @@ function updateControls() {
   const busy = Boolean(activeRun);
   $('send-button').disabled = busy || !connected || !navigator.onLine || !$('prompt').value.trim() || connecting || engineStarting;
   $('prompt').disabled = busy;
-  for (const id of ['mode-chat', 'mode-agent', 'new-session', 'clear-sessions', 'allow-write', 'allow-shell', 'max-tokens', 'temperature']) $(id).disabled = busy;
+  for (const id of ['mode-chat', 'mode-agent', 'new-session', 'clear-sessions', 'allow-write', 'allow-shell', 'max-tokens', 'temperature', 'thinking', 'attach-button', 'image-button']) $(id).disabled = busy;
+  updateMic();
   const locked = busy && activeRun.phase !== 'pending';
   for (const id of ['token', 'remember-token', 'connect-button', 'disconnect-button']) $(id).disabled = connecting || locked;
   $('refresh-status').disabled = connecting || !connected;
@@ -79,6 +225,9 @@ function renderSessions() {
 }
 function newSession(mode = 'chat') {
   if (activeRun) return;
+  stopSpeech();
+  clearAttachments();
+  showNotice();
   current = { id: ++sequence, mode, title: 'New session', messages: [], items: [], status: 'Ready when connected' };
   sessions.push(current);
   if (sessions.length > 20) sessions.shift();
@@ -107,7 +256,27 @@ function renderItem(item) {
   }
   const message = node('article', `message ${item.type}`);
   const labels = { user: 'You', assistant: 'Colibri', final: 'Colibri · final response', error: 'Error', system: 'Session' };
-  message.append(node('div', 'message-label', labels[item.type] || item.type), node('div', 'message-body', item.content || '(Empty event from server.)'));
+  message.append(node('div', 'message-label', labels[item.type] || item.type));
+  if (item.reasoning) {
+    const reasoning = node('details', 'reasoning-card');
+    reasoning.append(node('summary', '', 'Reasoning'), node('pre', '', item.reasoning));
+    message.append(reasoning);
+  }
+  if (item.image && isImageDataUrl(item.image)) {
+    const preview = node('img', 'message-image');
+    preview.src = item.image;
+    preview.alt = item.imageName || 'Attached image';
+    message.append(preview);
+  }
+  message.append(node('div', 'message-body', item.content || '(Empty event from server.)'));
+  if (['assistant', 'final'].includes(item.type) && item.content) {
+    const actions = node('div', 'message-actions');
+    const button = node('button', 'text-button', 'Read aloud');
+    button.type = 'button';
+    button.addEventListener('click', () => toggleSpeech(item, button));
+    actions.append(button);
+    message.append(actions);
+  }
   return message;
 }
 function renderSession() {
@@ -136,13 +305,17 @@ function renderSession() {
   $('timeline').scrollTop = $('timeline').scrollHeight;
 }
 function appendItem(session, event) {
-  const item = { type: event.type, ok: event.ok };
+  const item = { type: event.type, id: ++sequence, ok: event.ok };
   // Keep only bounded, redacted display strings, never executable markup.
-  for (const key of ['content', 'name', 'args', 'result']) {
+  for (const key of ['content', 'name', 'args', 'result', 'reasoning']) {
     if (event[key] !== undefined) {
       const text = safe(event[key]);
       item[key] = text.length > 64000 ? `${text.slice(0, 64000)}\n[Display truncated at 64,000 characters.]` : text;
     }
+  }
+  if (typeof event.image === 'string' && isImageDataUrl(event.image)) {
+    item.image = event.image;
+    item.imageName = typeof event.imageName === 'string' ? event.imageName.slice(0, 120) : 'Attached image';
   }
   session.items.push(item);
   const trimmed = session.items.length > 400;
@@ -238,6 +411,8 @@ async function connect(event) {
 }
 function disconnect() {
   if (activeRun && activeRun.phase !== 'pending') return;
+  if (recording) { recording.recorder.stop(); }
+  stopSpeech();
   healthController?.abort(); fileController?.abort(); clearTimeout(healthTimer);
   connected = false; engineReady = false; token = ''; fileBusy = false;
   try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* Optional storage. */ }
@@ -414,17 +589,23 @@ async function ensureEngine(run) {
 }
 async function submit(event) {
   event.preventDefault();
-  const text = $('prompt').value.trim();
-  if (!text || activeRun || !connected || !navigator.onLine) return;
+  const typed = $('prompt').value.trim();
+  if (!typed || activeRun || !connected || !navigator.onLine) return;
   if (!$('composer').reportValidity()) return;
   if (current.mode === 'agent' && $('allow-shell').checked && !window.confirm('Commands are NOT sandboxed. They can change or delete files with the server user’s permissions, including outside the workspace. Allow commands for this task?')) return;
   showError('composer-error');
+  showNotice();
   const session = current;
+  const context = attachments.map(file => `--- ${file.name} ---\n${file.content}`).join('\n\n');
+  const outgoing = context ? `${typed}\n\n${context}` : typed;
+  const image = imageAttachment;
+  const display = attachments.length ? `${typed}\n\nAttached: ${attachments.map(file => file.name).join(', ')}` : typed;
   const run = { kind: session.mode, session, controller: new AbortController(), phase: 'engine', id: null, after: 0, polls: 0, started: Date.now(), stopRequested: false, cancelBusy: false, hasOutput: false };
   activeRun = run;
-  if (session.title === 'New session') { session.title = safe(text.slice(0, 58)); $('session-title').textContent = session.title; }
-  appendItem(session, { type: 'user', content: text });
+  if (session.title === 'New session') { session.title = safe(typed.slice(0, 58)); $('session-title').textContent = session.title; }
+  appendItem(session, { type: 'user', content: display, image: image?.dataUrl, imageName: image?.name });
   $('prompt').value = '';
+  clearAttachments();
   renderSessions();
   setStatus(run.kind === 'agent' ? 'Starting agent…' : 'Waiting for engine…', session);
   try {
@@ -433,19 +614,29 @@ async function submit(event) {
     run.phase = run.kind === 'agent' ? 'starting' : 'running';
     if (run.kind === 'chat') {
       // Only successful exchanges become context. A failed send remains visible but isn't silently retried.
-      const messages = [...session.messages, { role: 'user', content: text }].slice(-39);
+      const currentTurn = image && isImageDataUrl(image.dataUrl)
+        ? { role: 'user', content: [
+            { type: 'text', text: outgoing },
+            { type: 'image_url', image_url: { url: image.dataUrl } },
+          ] }
+        : { role: 'user', content: outgoing };
+      const messages = [...session.messages, currentTurn].slice(-39);
       while (messages.length > 1 && messages[0].role !== 'user') messages.shift();
-      const data = await api('/api/chat', { method: 'POST', body: { messages, max_tokens: Number($('max-tokens').value), temperature: Number($('temperature').value) }, timeout: 180000, signal: run.controller.signal });
+      const body = { messages, max_tokens: Number($('max-tokens').value), temperature: Number($('temperature').value) };
+      const thinking = $('thinking').value;
+      if (thinking === 'off') body.reasoning_effort = 'none';
+      else if (thinking === 'high') body.reasoning_effort = 'high';
+      const data = await api('/api/chat', { method: 'POST', body, timeout: 180000, signal: run.controller.signal });
       if (activeRun !== run || run.controller.signal.aborted) return;
       const answer = parseChat(data);
-      session.messages = [...messages, answer];
-      appendItem(session, { type: 'assistant', content: answer.content });
+      session.messages = [...messages.map(message => ({ role: message.role, content: typeof message.content === 'string' ? message.content : outgoing })), { role: 'assistant', content: answer.content }];
+      appendItem(session, { type: 'assistant', content: answer.content, reasoning: answer.reasoning });
       if (data.usage) appendItem(session, { type: 'system', content: `Usage: ${safe(data.usage)}` });
       finishRun(run, 'Response received');
     } else {
       appendItem(session, { type: 'system', content: `Requested permissions · file writes: ${$('allow-write').checked ? 'allowed' : 'off'} · commands: ${$('allow-shell').checked ? 'allowed (NOT sandboxed)' : 'off'} · maximum 14 steps. Workspace root is selected by the server.` });
       // Do not abort an in-flight start on Stop: first recover its ID, then cancel it.
-      const data = await api('/api/agent/start', { method: 'POST', body: { task: text, allow_write: $('allow-write').checked, allow_shell: $('allow-shell').checked, max_steps: 14 }, timeout: 30000, signal: run.controller.signal });
+      const data = await api('/api/agent/start', { method: 'POST', body: { task: outgoing, allow_write: $('allow-write').checked, allow_shell: $('allow-shell').checked, max_steps: 14 }, timeout: 30000, signal: run.controller.signal });
       if (typeof data.id !== 'string' || !data.id || data.id.length > 256) throw new ApiError('Start returned no valid task ID. The server may have started a task; inspect it before retrying.', 0, 'UNKNOWN_START');
       run.id = data.id; run.phase = 'running';
       appendItem(session, { type: 'system', content: `Server task ID: ${run.id}` });
@@ -493,6 +684,23 @@ $('composer').addEventListener('submit', submit);
 $('prompt').addEventListener('input', updateControls);
 $('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) { event.preventDefault(); if (!$('send-button').disabled) $('composer').requestSubmit(); }
+});
+$('prompt').addEventListener('paste', event => {
+  const file = [...(event.clipboardData?.files || [])].find(entry => entry.type.startsWith('image/'));
+  if (file) { event.preventDefault(); void addImageFile(file); }
+});
+$('attach-button').addEventListener('click', () => $('attach-file').click());
+$('image-button').addEventListener('click', () => $('attach-image').click());
+$('mic-button').addEventListener('click', () => void toggleMic());
+$('attach-file').addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) void addTextFile(file);
+});
+$('attach-image').addEventListener('change', event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (file) void addImageFile(file);
 });
 $('stop-button').addEventListener('click', stopRun);
 $('new-session').addEventListener('click', () => { newSession(current.mode); closeMenu(); });

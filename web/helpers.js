@@ -1,5 +1,5 @@
 // Browser-independent protocol helpers. No storage, DOM, or logging side effects.
-export const LIMITS = Object.freeze({ polls: 300, pollMs: 1000, runMs: 10 * 60 * 1000, responseBytes: 4 * 1024 * 1024 });
+export const LIMITS = Object.freeze({ polls: 300, pollMs: 1000, runMs: 10 * 60 * 1000, responseBytes: 4 * 1024 * 1024, imageBytes: 6_000_000, audioBytes: 16 << 20 });
 export const TERMINAL_STATUSES = new Set(['completed', 'complete', 'done', 'finished', 'cancelled', 'canceled', 'failed', 'error']);
 
 export class ApiError extends Error {
@@ -46,7 +46,25 @@ export function parseChat(data) {
   if (data?.message?.role !== 'assistant' || typeof data.message.content !== 'string' || !data.message.content.trim()) {
     throw new Error('The engine returned an empty or invalid assistant response. No answer was added.');
   }
-  return { role: 'assistant', content: data.message.content };
+  const reasoning = data.message.reasoning_content ?? data.message.reasoning ?? '';
+  if (typeof reasoning !== 'string') throw new Error('The engine returned invalid reasoning text.');
+  return reasoning ? { role: 'assistant', content: data.message.content, reasoning } : { role: 'assistant', content: data.message.content };
+}
+
+export function isImageDataUrl(value) {
+  return typeof value === 'string' && value.length <= Math.ceil(LIMITS.imageBytes * 4 / 3) + 64
+    && /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
+export function parseStt(data) {
+  if (!data || typeof data.text !== 'string' || data.text.length > 32000) {
+    throw new Error('The speech service returned an invalid transcript.');
+  }
+  return {
+    text: data.text.trim(),
+    language: typeof data.language === 'string' ? data.language.slice(0, 32) : '',
+    duration: Number.isFinite(data.duration_s) ? data.duration_s : 0,
+  };
 }
 
 export function parsePoll(data, id, after) {
@@ -79,7 +97,7 @@ export function delay(ms, signal) {
 }
 
 export function createApi({ origin, getToken = () => '', fetchImpl = globalThis.fetch }) {
-  return async function api(path, { method = 'GET', body, signal, timeout = 20000, text = false, allowEmpty = false } = {}) {
+  return async function api(path, { method = 'GET', body, signal, timeout = 20000, text = false, allowEmpty = false, raw = false, contentType = '' } = {}) {
     const url = new URL(path, origin);
     if (!path.startsWith('/api/') || url.origin !== origin || url.hash || url.username || url.password) throw new ApiError('Only same-origin API requests are allowed.');
     for (const key of url.searchParams.keys()) {
@@ -87,9 +105,10 @@ export function createApi({ origin, getToken = () => '', fetchImpl = globalThis.
     }
     const token = getToken();
     if (/[\r\n\x00-\x1f\x7f]/.test(token)) throw new ApiError('The token contains invalid characters.');
+    if (raw && (typeof contentType !== 'string' || !/^[a-z]+\/[a-z0-9.+-]+$/i.test(contentType))) throw new ApiError('A valid content type is required for binary uploads.');
     const headers = { 'X-Colibri-Client': '1', Accept: text ? 'application/json, text/plain' : 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (body !== undefined) headers['Content-Type'] = raw ? contentType : 'application/json';
     const controller = new AbortController();
     let timedOut = false;
     const abort = () => controller.abort();
@@ -98,21 +117,21 @@ export function createApi({ origin, getToken = () => '', fetchImpl = globalThis.
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
     try {
       const response = await fetchImpl(url.href, {
-        method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+        method, headers, body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
         signal: controller.signal, cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer'
       });
       if (Number(response.headers.get('content-length')) > LIMITS.responseBytes) throw new ApiError('Response exceeds the 4 MiB browser limit.');
-      const raw = await response.text();
-      if (raw.length > LIMITS.responseBytes) throw new ApiError('Response exceeds the 4 MiB browser limit.');
+      const rawText = await response.text();
+      if (rawText.length > LIMITS.responseBytes) throw new ApiError('Response exceeds the 4 MiB browser limit.');
       let data;
-      try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
+      try { data = rawText ? JSON.parse(rawText) : null; } catch { data = null; }
       if (!response.ok) {
         const detail = typeof data?.detail === 'string' ? data.detail : typeof data?.error === 'string' ? data.error : '';
         const hint = response.status === 401 ? 'Token missing or rejected. Enter the server token and reconnect.' : response.status === 403 ? 'The server denied this request. Check its token and permissions.' : `Server request failed (HTTP ${response.status}).`;
         throw new ApiError(redact(`${hint}${detail ? ` ${detail.slice(0, 400)}` : ''}`, token), response.status);
       }
-      if (allowEmpty && !raw.trim()) return null;
-      if (text && !response.headers.get('content-type')?.includes('application/json')) return raw;
+      if (allowEmpty && !rawText.trim()) return null;
+      if (text && !response.headers.get('content-type')?.includes('application/json')) return rawText;
       if (data === null || typeof data !== 'object') throw new ApiError('The server returned empty or invalid JSON.');
       return data;
     } catch (error) {

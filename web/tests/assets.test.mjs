@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
-  LIMITS, ApiError, redact, normalizePath, parentPath, parseChat, parsePoll,
-  pollWithinBounds, canInstallSecurely, createApi,
+  LIMITS, ApiError, redact, normalizePath, parentPath, parseChat, parseStt, parsePoll,
+  pollWithinBounds, canInstallSecurely, createApi, isImageDataUrl,
 } from '../helpers.js';
 
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,6 +83,9 @@ test('canInstallSecurely only accepts https or loopback http', () => {
 test('parseChat and parsePoll tolerate only the documented shapes', () => {
   assert.deepEqual(parseChat({ message: { role: 'assistant', content: 'hi' }, usage: { total_tokens: 3 } }),
     { role: 'assistant', content: 'hi' });
+  assert.deepEqual(parseChat({ message: { role: 'assistant', content: 'hi', reasoning_content: 'why' } }),
+    { role: 'assistant', content: 'hi', reasoning: 'why' });
+  assert.throws(() => parseChat({ message: { role: 'assistant', content: 'hi', reasoning_content: 5 } }));
   assert.throws(() => parseChat({ message: { role: 'assistant', content: 5 } }));
   assert.throws(() => parseChat({ message: { role: 'assistant', content: '   ' } }));
   const poll = parsePoll({ id: 'abc', status: 'running', total: 4,
@@ -93,6 +96,35 @@ test('parseChat and parsePoll tolerate only the documented shapes', () => {
   assert.equal(poll.events.length, 2);
   assert.throws(() => parsePoll({ id: 'other', status: 'running', total: 4, steps: [] }, 'abc', 0));
   assert.throws(() => parsePoll({ id: 'abc', status: 'running', total: 1, steps: [{ type: 'mystery' }] }, 'abc', 0));
+});
+
+test('image data URLs and speech transcripts are validated before use', () => {
+  assert.equal(isImageDataUrl('data:image/png;base64,iVBORw0KGgo='), true);
+  assert.equal(isImageDataUrl('data:image/webp;base64,AAAA'), true);
+  assert.equal(isImageDataUrl('data:image/svg+xml;base64,AAAA'), false);
+  assert.equal(isImageDataUrl('https://example.com/x.png'), false);
+  assert.equal(isImageDataUrl(`data:image/png;base64,${'A'.repeat(Math.ceil(LIMITS.imageBytes * 4 / 3) + 65)}`), false);
+  assert.deepEqual(parseStt({ text: '  hello world ', language: 'en', duration_s: 1.5 }),
+    { text: 'hello world', language: 'en', duration: 1.5 });
+  assert.throws(() => parseStt({ text: 7 }));
+  assert.throws(() => parseStt(null));
+});
+
+test('createApi sends raw audio bodies with the declared content type', async () => {
+  const calls = [];
+  const api = createApi({
+    origin: 'http://127.0.0.1:8787',
+    getToken: () => '',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ text: 'ok' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const audio = new Uint8Array([1, 2, 3]);
+  await api('/api/stt', { method: 'POST', body: audio, raw: true, contentType: 'audio/webm' });
+  assert.equal(calls[0].options.headers['Content-Type'], 'audio/webm');
+  assert.equal(calls[0].options.body, audio);
+  await assert.rejects(() => api('/api/stt', { method: 'POST', body: audio, raw: true, contentType: 'not a type' }), ApiError);
 });
 
 test('createApi enforces same-origin, documented query keys and the client header', async () => {

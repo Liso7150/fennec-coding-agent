@@ -20,6 +20,12 @@ local engine only when you send a message.
 - **Local-only data** — conversations stay in the tab, files stay in the
   workspace, and nothing is uploaded by the app.
 - **Server files view** — browse and preview the core's workspace from the app.
+- **Reasoning control and display** — choose the server default, off, or high
+  reasoning effort; streamed reasoning appears in a collapsible block.
+- **Vision and attachments** — attach one PNG/JPEG/WebP/GIF (or paste it) for
+  the engine's vision tower, and up to three text files as bounded context.
+- **Speech** — dictate through the local faster-whisper sidecar
+  (`POST /api/stt`) and read answers aloud with the browser's offline voices.
 
 ## Run
 
