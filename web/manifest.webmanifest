@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Colibri Workspace",
-  "short_name": "Colibri",
-  "description": "Connected workspace for the Colibri engine: chat, supervised agent tasks, and workspace files.",
+  "name": "Fennec Workspace",
+  "short_name": "Fennec",
+  "description": "Connected workspace for the local engine: chat, supervised agent tasks, and workspace files.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

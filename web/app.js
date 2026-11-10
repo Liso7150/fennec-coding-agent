@@ -1,7 +1,7 @@
 import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=2';
 
 const $ = id => document.getElementById(id);
-const TOKEN_KEY = 'colibri.workspace.tab-token';
+const TOKEN_KEY = 'fennec.workspace.tab-token';
 let token = '';
 try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch { /* Storage is optional. */ }
 $('token').value = token;
@@ -255,7 +255,7 @@ function renderItem(item) {
     return card;
   }
   const message = node('article', `message ${item.type}`);
-  const labels = { user: 'You', assistant: 'Colibri', final: 'Colibri · final response', error: 'Error', system: 'Session' };
+  const labels = { user: 'You', assistant: 'Fennec', final: 'Fennec · final response', error: 'Error', system: 'Session' };
   message.append(node('div', 'message-label', labels[item.type] || item.type));
   if (item.reasoning) {
     const reasoning = node('details', 'reasoning-card');
@@ -363,7 +363,7 @@ async function refreshHealth() {
   try {
     const health = await api('/api/health', { signal: controller.signal, timeout: 10000 });
     if (controller.signal.aborted) return;
-    if (health.app !== 'Colibri' || typeof health.engine_running !== 'boolean') throw new Error('This origin did not return a valid Colibri health response.');
+    if (health.app !== 'Fennec' || typeof health.engine_running !== 'boolean') throw new Error('This origin did not return a valid Fennec health response.');
     connected = true; engineReady = health.engine_running;
     $('workspace-root').textContent = safe(typeof health.workspace === 'string' ? health.workspace : 'Root configured on the server');
     connectionState(engineReady ? 'Engine online' : 'Engine offline', engineReady ? 'online' : 'offline');
@@ -570,7 +570,7 @@ async function ensureEngine(run) {
       setStatus(`Starting the local engine… ${Math.round((Date.now() - startedAt) / 1000)}s`, run.session);
       await delay(2000, run.controller.signal);
       const health = await api('/api/health', { timeout: 10000, signal: run.controller.signal });
-      if (health.app !== 'Colibri') throw new Error('This origin did not return a valid Colibri health response.');
+      if (health.app !== 'Fennec') throw new Error('This origin did not return a valid Fennec health response.');
       if (health.engine_running) {
         engineReady = true;
         connectionState('Engine online', 'online');
@@ -762,7 +762,7 @@ window.addEventListener('pageshow', event => {
 
 const secureInstall = canInstallSecurely(location, window.isSecureContext);
 const installExplanation = secureInstall
-  ? 'Install from a supported browser to open Colibri in its own window. There is no model download to your device.'
+  ? 'Install from a supported browser to open Fennec in its own window. There is no model download to your device.'
   : 'Installation and offline support need a secure context. A LAN IP over plain HTTP is not secure. Configure trusted HTTPS on the server (including a certificate trusted by this device); localhost/loopback is only for the device running the server.';
 $('install-message').textContent = installExplanation;
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); if (secureInstall) installPrompt = event; });

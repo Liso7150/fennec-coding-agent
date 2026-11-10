@@ -1,9 +1,9 @@
-# Colibri Coding Agent
+# Fennec Coding Agent
 
-Installable, chat-first coding workspace for the
-[Colibri](https://github.com/JustVugg/colibri) engine. The browser app (`web/`)
+Installable, chat-first coding workspace for the Fennec engine, whose base idea is
+[Colibri](https://github.com/JustVugg/colibri). The browser app (`web/`)
 talks to the shared local core
-([`colibri-core`](https://github.com/Liso7150/colibri-core)), which starts the
+([`fennec-core`](https://github.com/Liso7150/fennec-core)), which starts the
 local engine only when you send a message.
 
 ## Features
@@ -32,16 +32,16 @@ local engine only when you send a message.
 Install the core (editable) and start its server, which also serves this PWA:
 
 ```bash
-python -m pip install -e colibri-core
-colibri-agent serve --host 127.0.0.1 --port 8787
+python -m pip install -e fennec-core
+fennec-agent serve --host 127.0.0.1 --port 8787
 # open http://127.0.0.1:8787
 ```
 
-The core reads `~/.colibri/config.json` (or `COLIBRI_CONFIG` / `COLIBRI_*`
+The core reads `~/.fennec/config.json` (or `FENNEC_CONFIG` / `FENNEC_*`
 variables) for the engine URL, model and workspace. A non-loopback bind requires
-`COLIBRI_APP_TOKEN` and TLS in front of the core; plain LAN HTTP is refused.
+`FENNEC_APP_TOKEN` and TLS in front of the core; plain LAN HTTP is refused.
 
-Android: see [`colibri-installer/android`](https://github.com/Liso7150/colibri-installer/tree/main/android)
+Android: see [`fennec-installer/android`](https://github.com/Liso7150/fennec-installer/tree/main/android)
 for the Termux path (core + PWA on the phone) and the WebView scaffold.
 
 ## Tests
@@ -52,6 +52,7 @@ node --test web/tests/
 
 ## Credits
 
-Engine: [JustVugg/colibri](https://github.com/JustVugg/colibri). Fine-tuning:
+Engine base idea: [JustVugg/colibri](https://github.com/JustVugg/colibri) —
+device-tiered MoE inference. Fine-tuning:
 [AirLLM](https://github.com/lyogavin/airllm). Part of the
-[Colibri suite](https://github.com/Liso7150/colibri-environment-setup).
+[Fennec suite](https://github.com/Liso7150/fennec-environment-setup).

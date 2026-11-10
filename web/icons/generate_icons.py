@@ -1,4 +1,4 @@
-"""Rasterize the Colibri workspace mark to the PNG sizes the manifest ships.
+"""Rasterize the Fennec workspace mark to the PNG sizes the manifest ships.
 
 Run from this directory:  python generate_icons.py
 Geometry mirrors icon.svg (512-unit canvas) so the SVG and PNGs agree.

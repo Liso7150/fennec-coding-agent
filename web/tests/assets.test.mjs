@@ -73,11 +73,11 @@ test('poll bounds stay inside the documented limits', () => {
 });
 
 test('canInstallSecurely only accepts https or loopback http', () => {
-  assert.equal(canInstallSecurely({ protocol: 'https:', hostname: 'colibri.example' }, true), true);
+  assert.equal(canInstallSecurely({ protocol: 'https:', hostname: 'fennec.example' }, true), true);
   assert.equal(canInstallSecurely({ protocol: 'http:', hostname: '127.0.0.1' }, true), true);
   assert.equal(canInstallSecurely({ protocol: 'http:', hostname: 'localhost' }, true), true);
   assert.equal(canInstallSecurely({ protocol: 'http:', hostname: '192.168.1.20' }, true), false);
-  assert.equal(canInstallSecurely({ protocol: 'https:', hostname: 'colibri.example' }, false), false);
+  assert.equal(canInstallSecurely({ protocol: 'https:', hostname: 'fennec.example' }, false), false);
 });
 
 test('parseChat and parsePoll tolerate only the documented shapes', () => {
@@ -138,7 +138,7 @@ test('createApi enforces same-origin, documented query keys and the client heade
     },
   });
   await api('/api/health');
-  assert.equal(calls[0].options.headers['X-Colibri-Client'], '1');
+  assert.equal(calls[0].options.headers['X-Fennec-Client'], '1');
   assert.equal(calls[0].options.headers.Authorization, 'Bearer tok');
   await assert.rejects(() => api('http://evil.example/api/health'), ApiError);
   await assert.rejects(() => api('/api/files?cmd=rm'), ApiError);

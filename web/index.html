@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#171715">
-  <meta name="description" content="A connected workspace for Colibri. Chat, run supervised agent tasks, and inspect your server workspace.">
+  <meta name="description" content="A connected workspace for Fennec. Chat, run supervised agent tasks, and inspect your server workspace.">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="referrer" content="no-referrer">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Colibri Workspace</title>
+  <title>Fennec Workspace</title>
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
@@ -20,12 +20,12 @@
   <a class="skip-link" href="#prompt">Skip to message</a>
   <header class="topbar">
     <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="Open connection and sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
-    <a class="brand" href="./"><img src="./icons/icon.svg?v=1" width="34" height="34" alt=""><span>Colibri <span class="brand-light">Workspace</span></span></a>
+    <a class="brand" href="./"><img src="./icons/icon.svg?v=1" width="34" height="34" alt=""><span>Fennec <span class="brand-light">Workspace</span></span></a>
     <span class="local-badge">YOUR SERVER. YOUR WORKSPACE.</span>
     <span id="connection-badge" class="status-badge" data-state="offline" role="status">Not connected</span>
     <button id="install-button" class="quiet-button" type="button">Install app</button>
   </header>
-  <div id="connection-notice" class="connection-notice" role="status">Connect to your Colibri server to begin. Inference needs a connection.</div>
+  <div id="connection-notice" class="connection-notice" role="status">Connect to your Fennec server to begin. Inference needs a connection.</div>
   <div class="app-layout">
     <aside id="sidebar" class="sidebar" aria-label="Connection and sessions">
       <div class="sidebar-heading"><span class="eyebrow">WORKSPACE</span><button id="menu-close" class="icon-button menu-close" type="button" aria-label="Close sidebar">×</button></div>
@@ -33,7 +33,7 @@
         <label for="server-origin">Same-origin server</label>
         <output id="server-origin" class="server-origin"></output>
         <label for="token">Access token <span class="muted">(if required)</span></label>
-        <input id="token" name="colibri-token" type="password" placeholder="Enter server bearer token" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096">
+        <input id="token" name="fennec-token" type="password" placeholder="Enter server bearer token" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096">
         <label class="check-row"><input id="remember-token" type="checkbox">Remember token for this tab</label>
         <div class="button-row"><button id="connect-button" class="primary-button" type="submit">Connect</button><button id="disconnect-button" class="quiet-button" type="button">Disconnect</button></div>
         <p id="connect-error" class="error-text" role="alert" hidden></p>
@@ -45,13 +45,13 @@
       <p class="hint">Conversations stay in memory in this tab. Reloading clears them. Stop an agent before leaving.</p>
       <details class="telemetry"><summary>Engine telemetry</summary><pre id="engine-telemetry">Not connected.</pre><button id="refresh-status" class="quiet-button" type="button">Refresh status</button></details>
       <div class="server-note"><span class="eyebrow">CONNECTED, LOCAL CORE</span><p>The engine runs on the device hosting this page - your computer, or a phone running the core in Termux. Files and commands use that device's workspace root; nothing is uploaded.</p></div>
-      <footer>Powered by <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener noreferrer">Colibri</a> · <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener noreferrer">AirLLM</a><br><a href="./LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a></footer>
+      <footer>Engine base idea: <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener noreferrer">Colibri</a> · Fine-tuning: <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener noreferrer">AirLLM</a><br><a href="./LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a></footer>
     </aside>
     <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" hidden></button>
     <main class="main-layout">
       <nav class="view-tabs" aria-label="Workspace views"><button id="view-workspace" class="active" type="button" aria-pressed="true">Conversation</button><button id="view-files" type="button" aria-pressed="false">Server files</button></nav>
       <section id="conversation-panel" class="conversation-panel" aria-label="Conversation">
-        <div class="conversation-heading"><div><span class="eyebrow">COLIBRI / <span id="mode-caption">CHAT</span></span><h1 id="session-title">A little space to build.</h1></div><span id="run-status" class="run-status" role="status">Ready when connected</span></div>
+        <div class="conversation-heading"><div><span class="eyebrow">FENNEC / <span id="mode-caption">CHAT</span></span><h1 id="session-title">A little space to build.</h1></div><span id="run-status" class="run-status" role="status">Ready when connected</span></div>
         <div id="timeline" class="timeline" role="log" aria-label="Conversation and real tool activity" aria-live="polite" aria-relevant="additions"></div>
         <form id="composer" class="composer">
           <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><div class="toolbar-tools"><span id="mode-description" class="hint">Talk to the engine. No tools.</span><button id="attach-button" class="quiet-button" type="button" title="Attach a text file">Attach</button><button id="image-button" class="quiet-button" type="button" title="Attach one image for vision">Image</button><button id="mic-button" class="quiet-button" type="button" title="Dictate with the local microphone">Mic</button></div></div>
@@ -79,7 +79,7 @@
       </aside>
     </main>
   </div>
-  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Colibri close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server; the local engine starts on demand when you send a message.</p><p id="pwa-status" class="hint"></p></dialog>
-  <noscript><div class="noscript">JavaScript is required to connect to Colibri. The Streamlit app in ui/ is a separate mock prototype.</div></noscript>
+  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Fennec close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server; the local engine starts on demand when you send a message.</p><p id="pwa-status" class="hint"></p></dialog>
+  <noscript><div class="noscript">JavaScript is required to connect to Fennec. The Streamlit app in ui/ is a separate mock prototype.</div></noscript>
 </body>
 </html>

@@ -1,5 +1,5 @@
 /* Cache the versioned static shell only. API traffic is never cached or intercepted. */
-const CACHE = 'colibri-shell-v3';
+const CACHE = 'fennec-shell-v3';
 const SHELL = [
   './',
   './index.html',

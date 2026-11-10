@@ -106,7 +106,7 @@ export function createApi({ origin, getToken = () => '', fetchImpl = globalThis.
     const token = getToken();
     if (/[\r\n\x00-\x1f\x7f]/.test(token)) throw new ApiError('The token contains invalid characters.');
     if (raw && (typeof contentType !== 'string' || !/^[a-z]+\/[a-z0-9.+-]+$/i.test(contentType))) throw new ApiError('A valid content type is required for binary uploads.');
-    const headers = { 'X-Colibri-Client': '1', Accept: text ? 'application/json, text/plain' : 'application/json' };
+    const headers = { 'X-Fennec-Client': '1', Accept: text ? 'application/json, text/plain' : 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (body !== undefined) headers['Content-Type'] = raw ? contentType : 'application/json';
     const controller = new AbortController();
@@ -138,7 +138,7 @@ export function createApi({ origin, getToken = () => '', fetchImpl = globalThis.
       if (timedOut) throw new ApiError('Request timed out. Check the server before retrying.', 0, 'TIMEOUT');
       if (controller.signal.aborted) throw new ApiError('Request stopped.', 0, 'ABORTED');
       if (error instanceof ApiError) throw error;
-      throw new ApiError('Cannot reach this origin’s Colibri API. Check connection, trusted HTTPS, and server availability.', 0, 'NETWORK');
+      throw new ApiError('Cannot reach this origin’s Fennec API. Check connection, trusted HTTPS, and server availability.', 0, 'NETWORK');
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
