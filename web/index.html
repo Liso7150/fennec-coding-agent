@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#171715">
+  <meta name="description" content="A connected workspace for Colibri. Chat, run supervised agent tasks, and inspect your server workspace.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Colibri Workspace</title>
+  <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
+  <link rel="manifest" href="./manifest.webmanifest?v=1">
+  <link rel="stylesheet" href="./styles.css?v=1">
+  <script type="module" src="./app.js?v=1"></script>
+</head>
+<body data-view="workspace">
+  <a class="skip-link" href="#prompt">Skip to message</a>
+  <header class="topbar">
+    <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="Open connection and sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <a class="brand" href="./"><img src="./icons/icon.svg?v=1" width="34" height="34" alt=""><span>Colibri <span class="brand-light">Workspace</span></span></a>
+    <span class="local-badge">YOUR SERVER. YOUR WORKSPACE.</span>
+    <span id="connection-badge" class="status-badge" data-state="offline" role="status">Not connected</span>
+    <button id="install-button" class="quiet-button" type="button">Install app</button>
+  </header>
+  <div id="connection-notice" class="connection-notice" role="status">Connect to your Colibri server to begin. Inference needs a connection.</div>
+  <div class="app-layout">
+    <aside id="sidebar" class="sidebar" aria-label="Connection and sessions">
+      <div class="sidebar-heading"><span class="eyebrow">WORKSPACE</span><button id="menu-close" class="icon-button menu-close" type="button" aria-label="Close sidebar">×</button></div>
+      <form id="connect-form" class="connection-form">
+        <label for="server-origin">Same-origin server</label>
+        <output id="server-origin" class="server-origin"></output>
+        <label for="token">Access token <span class="muted">(if required)</span></label>
+        <input id="token" name="colibri-token" type="password" placeholder="Enter server bearer token" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096">
+        <label class="check-row"><input id="remember-token" type="checkbox">Remember token for this tab</label>
+        <div class="button-row"><button id="connect-button" class="primary-button" type="submit">Connect</button><button id="disconnect-button" class="quiet-button" type="button">Disconnect</button></div>
+        <p id="connect-error" class="error-text" role="alert" hidden></p>
+        <p class="hint">Token stays in memory, or this tab's session storage if selected. Never in a URL.</p>
+      </form>
+      <div class="section-heading"><h2>Sessions</h2><button id="new-session" class="icon-button" type="button" aria-label="New session">+</button></div>
+      <ul id="session-list" class="session-list" aria-label="Sessions in this tab"></ul>
+      <button id="clear-sessions" class="text-button" type="button">Clear session history</button>
+      <p class="hint">Conversations stay in memory in this tab. Reloading clears them. Stop an agent before leaving.</p>
+      <details class="telemetry"><summary>Engine telemetry</summary><pre id="engine-telemetry">Not connected.</pre><button id="refresh-status" class="quiet-button" type="button">Refresh status</button></details>
+      <div class="server-note"><span class="eyebrow">CONNECTED, NOT ON-DEVICE</span><p>Models run on your server, never on your phone. Files and commands use the server's workspace root.</p></div>
+      <footer>Powered by <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener noreferrer">Colibri</a> · <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener noreferrer">AirLLM</a><br><a href="./LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a></footer>
+    </aside>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" hidden></button>
+    <main class="main-layout">
+      <nav class="view-tabs" aria-label="Workspace views"><button id="view-workspace" class="active" type="button" aria-pressed="true">Conversation</button><button id="view-files" type="button" aria-pressed="false">Server files</button></nav>
+      <section id="conversation-panel" class="conversation-panel" aria-label="Conversation">
+        <div class="conversation-heading"><div><span class="eyebrow">COLIBRI / <span id="mode-caption">CHAT</span></span><h1 id="session-title">A little space to build.</h1></div><span id="run-status" class="run-status" role="status">Ready when connected</span></div>
+        <div id="timeline" class="timeline" role="log" aria-label="Conversation and real tool activity" aria-live="polite" aria-relevant="additions"></div>
+        <form id="composer" class="composer">
+          <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><span id="mode-description" class="hint">Talk to the engine. No tools.</span></div>
+          <fieldset id="agent-permissions" class="permissions" hidden><legend>Permissions for this run only</legend><label class="check-row"><input id="allow-write" type="checkbox">Allow file writes</label><label class="check-row"><input id="allow-shell" type="checkbox">Allow commands</label><p class="warning">Commands are NOT sandboxed. They run with the server user's permissions and can modify files even when file writes are off. Enable only on a trusted server for a task you understand.</p></fieldset>
+          <label for="prompt" class="sr-only">Message or agent task</label>
+          <textarea id="prompt" rows="3" maxlength="32000" placeholder="What would you like to work on?" required></textarea>
+          <div class="composer-bottom"><details id="generation-settings" class="generation-settings"><summary>Chat settings</summary><div><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="8192" step="1" value="1024" required><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" required></div></details><span id="agent-limit" class="hint" hidden>Up to 14 steps · root workspace only</span><div class="button-row"><button id="stop-button" class="stop-button" type="button" hidden>Stop</button><button id="send-button" class="primary-button" type="submit" disabled>Send message <span aria-hidden="true">↑</span></button></div></div>
+          <p id="composer-error" class="error-text" role="alert" hidden></p>
+          <p class="composer-note">Responses are not verification. Inspect actual tool output before trusting a result.</p>
+        </form>
+      </section>
+      <aside id="files-panel" class="files-panel" aria-label="Server workspace files">
+        <div class="section-heading"><h2>Server workspace</h2><button id="files-refresh" class="icon-button" type="button" aria-label="Refresh current directory" disabled>↻</button></div>
+        <p id="workspace-root" class="workspace-root">Root set by the server</p>
+        <p class="hint">Read-only browser. Paths are relative to the server root, not your device. No host directory selection.</p>
+        <form id="directory-form" class="directory-form"><label for="directory-path">Directory within root</label><div class="button-row"><input id="directory-path" type="text" placeholder="Root (empty path)" autocomplete="off" spellcheck="false"><button id="directory-open" class="quiet-button" type="submit" disabled>Open</button></div></form>
+        <div class="file-navigation"><button id="files-up" class="text-button" type="button" disabled>↑ Parent</button><span id="directory-label">/</span></div>
+        <p id="files-error" class="error-text" role="alert" hidden></p>
+        <ul id="file-list" class="file-list" aria-label="Directory entries"><li class="empty-files">Connect to inspect files.</li></ul>
+        <section class="file-preview" aria-label="File contents"><h3 id="file-name">No file selected</h3><pre id="file-content" tabindex="0">Select a file to view its text. Files are never executed or rendered as HTML.</pre></section>
+      </aside>
+    </main>
+  </div>
+  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Colibri close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server and a running engine for inference.</p><p id="pwa-status" class="hint"></p></dialog>
+  <noscript><div class="noscript">JavaScript is required to connect to Colibri. The Streamlit app in ui/ is a separate mock prototype.</div></noscript>
+</body>
+</html>
