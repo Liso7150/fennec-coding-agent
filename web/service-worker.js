@@ -1,9 +1,9 @@
 /* Cache the versioned static shell only. API traffic is never cached or intercepted. */
-const CACHE = 'colibri-shell-v1';
+const CACHE = 'colibri-shell-v2';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=1',
+  './app.js?v=2',
   './helpers.js?v=1',
   './styles.css?v=1',
   './manifest.webmanifest?v=1',

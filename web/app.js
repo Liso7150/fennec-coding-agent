@@ -12,6 +12,7 @@ const sessions = [];
 let current;
 let connected = false;
 let engineReady = false;
+let engineStarting = false;
 let connecting = false;
 let healthTimer;
 let healthController;
@@ -39,7 +40,7 @@ function setStatus(message, session = current) {
 }
 function updateControls() {
   const busy = Boolean(activeRun);
-  $('send-button').disabled = busy || !connected || !engineReady || !navigator.onLine || !$('prompt').value.trim() || connecting;
+  $('send-button').disabled = busy || !connected || !navigator.onLine || !$('prompt').value.trim() || connecting || engineStarting;
   $('prompt').disabled = busy;
   for (const id of ['mode-chat', 'mode-agent', 'new-session', 'clear-sessions', 'allow-write', 'allow-shell', 'max-tokens', 'temperature']) $(id).disabled = busy;
   const locked = busy && activeRun.phase !== 'pending';
@@ -55,7 +56,7 @@ function updateControls() {
 function connectionState(message, state = 'offline') {
   $('connection-badge').textContent = message;
   $('connection-badge').dataset.state = state;
-  $('connection-notice').textContent = !navigator.onLine ? 'Offline shell only. Inference and server files need a connection; nothing is queued.' : !connected ? 'Not connected to the server. Inference needs a connection; messages are not queued.' : !engineReady ? 'Server connected, engine offline. You can inspect files, but chat and agent submissions are disabled.' : 'Connected to your server. Inference and workspace files stay on the server, not this device.';
+  $('connection-notice').textContent = !navigator.onLine ? 'Offline shell only. Inference and server files need a connection; nothing is queued.' : !connected ? 'Not connected to the server. Inference needs a connection; messages are not queued.' : !engineReady ? 'Server connected, engine offline. It starts on this device when you send a message.' : 'Connected to your server. Inference runs on this device; workspace files stay there too.';
   updateControls();
 }
 function resetPermissions() {
@@ -369,21 +370,57 @@ async function cancelRun(run, reason = 'Stop requested. Requesting server cancel
 async function stopRun() {
   const run = activeRun;
   if (!run) return;
+  if (run.phase === 'engine') {
+    run.controller.abort();
+    appendItem(run.session, { type: 'system', content: 'Stopped while the local engine was starting. It may finish loading in the background; the service stops it when it exits.' });
+    finishRun(run, 'Stopped');
+    return;
+  }
   if (run.kind === 'chat') {
     run.controller.abort();
     appendItem(run.session, { type: 'system', content: 'Stopped waiting for the chat response. Server inference may continue; this API has no chat cancellation endpoint.' });
     finishRun(run, 'Chat response stopped');
   } else await cancelRun(run);
 }
+// The engine is local and on demand: the first message starts it through the core service.
+async function ensureEngine(run) {
+  if (engineReady) return;
+  engineStarting = true;
+  updateControls();
+  const startedAt = Date.now();
+  const graceUntil = startedAt + 10000;
+  try {
+    await api('/api/engine/start', { method: 'POST', timeout: 10000, signal: run.controller.signal });
+    while (Date.now() - startedAt < 240000) {
+      setStatus(`Starting the local engine… ${Math.round((Date.now() - startedAt) / 1000)}s`, run.session);
+      await delay(2000, run.controller.signal);
+      const health = await api('/api/health', { timeout: 10000, signal: run.controller.signal });
+      if (health.app !== 'Colibri') throw new Error('This origin did not return a valid Colibri health response.');
+      if (health.engine_running) {
+        engineReady = true;
+        connectionState('Engine online', 'online');
+        return;
+      }
+      if (Date.now() > graceUntil) {
+        const status = await api('/api/engine/status', { timeout: 10000, signal: run.controller.signal });
+        if (!status.running && !status.owned) throw new Error('The local engine could not start. Select an installed model on the server and check the engine log.');
+      }
+    }
+    throw new Error('The local engine did not become ready within 4 minutes. Check the engine log on the server, then retry.');
+  } finally {
+    engineStarting = false;
+    updateControls();
+  }
+}
 async function submit(event) {
   event.preventDefault();
   const text = $('prompt').value.trim();
-  if (!text || activeRun || !connected || !engineReady || !navigator.onLine) return;
+  if (!text || activeRun || !connected || !navigator.onLine) return;
   if (!$('composer').reportValidity()) return;
   if (current.mode === 'agent' && $('allow-shell').checked && !window.confirm('Commands are NOT sandboxed. They can change or delete files with the server user’s permissions, including outside the workspace. Allow commands for this task?')) return;
   showError('composer-error');
   const session = current;
-  const run = { kind: session.mode, session, controller: new AbortController(), phase: session.mode === 'agent' ? 'starting' : 'running', id: null, after: 0, polls: 0, started: Date.now(), stopRequested: false, cancelBusy: false, hasOutput: false };
+  const run = { kind: session.mode, session, controller: new AbortController(), phase: 'engine', id: null, after: 0, polls: 0, started: Date.now(), stopRequested: false, cancelBusy: false, hasOutput: false };
   activeRun = run;
   if (session.title === 'New session') { session.title = safe(text.slice(0, 58)); $('session-title').textContent = session.title; }
   appendItem(session, { type: 'user', content: text });
@@ -391,6 +428,9 @@ async function submit(event) {
   renderSessions();
   setStatus(run.kind === 'agent' ? 'Starting agent…' : 'Waiting for engine…', session);
   try {
+    await ensureEngine(run);
+    if (activeRun !== run || run.controller.signal.aborted) return;
+    run.phase = run.kind === 'agent' ? 'starting' : 'running';
     if (run.kind === 'chat') {
       // Only successful exchanges become context. A failed send remains visible but isn't silently retried.
       const messages = [...session.messages, { role: 'user', content: text }].slice(-39);

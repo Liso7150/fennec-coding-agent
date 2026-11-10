@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
   <link rel="stylesheet" href="./styles.css?v=1">
-  <script type="module" src="./app.js?v=1"></script>
+  <script type="module" src="./app.js?v=2"></script>
 </head>
 <body data-view="workspace">
   <a class="skip-link" href="#prompt">Skip to message</a>
@@ -44,7 +44,7 @@
       <button id="clear-sessions" class="text-button" type="button">Clear session history</button>
       <p class="hint">Conversations stay in memory in this tab. Reloading clears them. Stop an agent before leaving.</p>
       <details class="telemetry"><summary>Engine telemetry</summary><pre id="engine-telemetry">Not connected.</pre><button id="refresh-status" class="quiet-button" type="button">Refresh status</button></details>
-      <div class="server-note"><span class="eyebrow">CONNECTED, NOT ON-DEVICE</span><p>Models run on your server, never on your phone. Files and commands use the server's workspace root.</p></div>
+      <div class="server-note"><span class="eyebrow">CONNECTED, LOCAL CORE</span><p>The engine runs on the device hosting this page - your computer, or a phone running the core in Termux. Files and commands use that device's workspace root; nothing is uploaded.</p></div>
       <footer>Powered by <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener noreferrer">Colibri</a> · <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener noreferrer">AirLLM</a><br><a href="./LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a></footer>
     </aside>
     <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" hidden></button>
@@ -66,7 +66,7 @@
       <aside id="files-panel" class="files-panel" aria-label="Server workspace files">
         <div class="section-heading"><h2>Server workspace</h2><button id="files-refresh" class="icon-button" type="button" aria-label="Refresh current directory" disabled>↻</button></div>
         <p id="workspace-root" class="workspace-root">Root set by the server</p>
-        <p class="hint">Read-only browser. Paths are relative to the server root, not your device. No host directory selection.</p>
+        <p class="hint">Read-only browser. Paths are relative to the core's configured workspace root. No host directory selection.</p>
         <form id="directory-form" class="directory-form"><label for="directory-path">Directory within root</label><div class="button-row"><input id="directory-path" type="text" placeholder="Root (empty path)" autocomplete="off" spellcheck="false"><button id="directory-open" class="quiet-button" type="submit" disabled>Open</button></div></form>
         <div class="file-navigation"><button id="files-up" class="text-button" type="button" disabled>↑ Parent</button><span id="directory-label">/</span></div>
         <p id="files-error" class="error-text" role="alert" hidden></p>
@@ -75,7 +75,7 @@
       </aside>
     </main>
   </div>
-  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Colibri close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server and a running engine for inference.</p><p id="pwa-status" class="hint"></p></dialog>
+  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Colibri close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server; the local engine starts on demand when you send a message.</p><p id="pwa-status" class="hint"></p></dialog>
   <noscript><div class="noscript">JavaScript is required to connect to Colibri. The Streamlit app in ui/ is a separate mock prototype.</div></noscript>
 </body>
 </html>
