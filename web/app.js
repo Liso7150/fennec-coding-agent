@@ -1,6 +1,7 @@
 import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=2';
 
 const $ = id => document.getElementById(id);
+const VERSION = '1.6.0';
 const TOKEN_KEY = 'fennec.workspace.tab-token';
 let token = '';
 try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch { /* Storage is optional. */ }
@@ -780,6 +781,7 @@ if (secureInstall && 'serviceWorker' in navigator) {
     .catch(() => { $('pwa-status').textContent = 'Offline shell could not be registered. Check server static routes and HTTPS. Connected use may still work.'; });
 } else $('pwa-status').textContent = secureInstall ? 'This browser does not support a service worker. Use the connected web app.' : 'No service worker registered on this origin. Trusted HTTPS is required for LAN installation.';
 
+$('app-version').textContent = `Fennec ${VERSION}`;
 newSession();
 connectionState('Not connected');
 if (navigator.onLine) connect();

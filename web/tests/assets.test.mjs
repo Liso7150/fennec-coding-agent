@@ -48,6 +48,12 @@ test('service worker caches only the static shell', () => {
   assert.match(source, /if \(request\.method !== 'GET'\) return;/);
 });
 
+test('the shell reports the app version', () => {
+  assert.match(read('index.html'), /id="app-version"/);
+  assert.match(read('app.js'), /const VERSION = '1\.6\.0'/);
+  assert.match(read('app.js'), /\$\('app-version'\)\.textContent/);
+});
+
 test('normalizePath rejects traversal, absolute and encoded input', () => {
   assert.equal(normalizePath('src/app.ts'), 'src/app.ts');
   assert.equal(normalizePath('./src//app.ts'), 'src/app.ts');
