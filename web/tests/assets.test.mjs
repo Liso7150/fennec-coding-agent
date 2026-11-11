@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import {
   LIMITS, ApiError, redact, normalizePath, parentPath, parseChat, parseStt, parsePoll,
-  pollWithinBounds, canInstallSecurely, createApi, isImageDataUrl,
+  parseOutlets, outletSummary, pollWithinBounds, canInstallSecurely, createApi, isImageDataUrl,
 } from '../helpers.js';
 
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -50,7 +50,7 @@ test('service worker caches only the static shell', () => {
 
 test('the shell reports the app version', () => {
   assert.match(read('index.html'), /id="app-version"/);
-  assert.match(read('app.js'), /const VERSION = '1\.8\.0'/);
+  assert.match(read('app.js'), /const VERSION = '1\.9\.0'/);
   assert.match(read('app.js'), /\$\('app-version'\)\.textContent/);
 });
 
@@ -148,4 +148,40 @@ test('createApi enforces same-origin, documented query keys and the client heade
   assert.equal(calls[0].options.headers.Authorization, 'Bearer tok');
   await assert.rejects(() => api('http://evil.example/api/health'), ApiError);
   await assert.rejects(() => api('/api/files?cmd=rm'), ApiError);
+});
+
+test('parseOutlets reads only the documented outlet shapes', () => {
+  const status = parseOutlets({
+    jev: { present: true, root: '/x/jev-ultrafast', note: 'TypeSafe policy key set' },
+    openbot: { present: false, url: 'http://127.0.0.1:3001', error: 'no OpenBot workspace answering' },
+  });
+  assert.deepEqual(status, {
+    jev: { present: true, note: 'TypeSafe policy key set' },
+    openbot: { present: false, note: 'no OpenBot workspace answering' },
+  });
+  assert.equal(parseOutlets({ jev: {}, openbot: {} }).jev.present, false);
+  assert.throws(() => parseOutlets(null), /Invalid browser outlet response/);
+  assert.throws(() => parseOutlets({ jev: { present: true } }), /no OpenBot outlet/);
+  assert.throws(() => parseOutlets({ jev: 'yes', openbot: {} }), /no Jev outlet/);
+});
+
+test('the outlet summary names both outlets and never invents one', () => {
+  assert.equal(outletSummary(null), 'Browser outlet: status not loaded yet.');
+  assert.equal(
+    outletSummary({ jev: { present: true }, openbot: { present: false } }),
+    'Browser outlet: Jev ready · OpenBot not answering.',
+  );
+});
+
+test('the browser outlet is offered only through the documented wiring', () => {
+  const html = read('index.html');
+  assert.match(html, /<input id="allow-web" type="checkbox">/);
+  assert.match(html, /<p id="outlet-status" class="hint">/);
+  const app = read('app.js');
+  assert.match(app, /allow_web: \$\('allow-web'\)\.checked/);
+  assert.match(app, /\$\('allow-web'\)\.disabled = busy \|\| !outletReady\(\)/);
+  assert.match(app, /api\('\/api\/outlets'/);
+  assert.match(app, /browser outlet: \$\{browser\}/);
+  // Nothing about the outlet may be cached or fetched cross-origin.
+  assert.match(read('service-worker.js'), /url\.pathname === '\/api' \|\| url\.pathname\.startsWith\('\/api\/'\)/);
 });

@@ -14,7 +14,7 @@
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
   <link rel="stylesheet" href="./styles.css?v=2">
-  <script type="module" src="./app.js?v=3"></script>
+  <script type="module" src="./app.js?v=4"></script>
 </head>
 <body data-view="workspace">
   <a class="skip-link" href="#prompt">Skip to message</a>
@@ -55,7 +55,7 @@
         <div id="timeline" class="timeline" role="log" aria-label="Conversation and real tool activity" aria-live="polite" aria-relevant="additions"></div>
         <form id="composer" class="composer">
           <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><div class="toolbar-tools"><span id="mode-description" class="hint">Talk to the engine. No tools.</span><button id="attach-button" class="quiet-button" type="button" title="Attach a text file">Attach</button><button id="image-button" class="quiet-button" type="button" title="Attach one image for vision">Image</button><button id="mic-button" class="quiet-button" type="button" title="Dictate with the local microphone">Mic</button></div></div>
-          <fieldset id="agent-permissions" class="permissions" hidden><legend>Permissions for this run only</legend><label class="check-row"><input id="allow-write" type="checkbox">Allow file writes</label><label class="check-row"><input id="allow-shell" type="checkbox">Allow commands</label><p class="warning">Commands are NOT sandboxed. They run with the server user's permissions and can modify files even when file writes are off. Enable only on a trusted server for a task you understand.</p></fieldset>
+          <fieldset id="agent-permissions" class="permissions" hidden><legend>Permissions for this run only</legend><label class="check-row"><input id="allow-write" type="checkbox">Allow file writes</label><label class="check-row"><input id="allow-shell" type="checkbox">Allow commands</label><label class="check-row"><input id="allow-web" type="checkbox">Allow the local browser outlet</label><p class="warning">Commands are NOT sandboxed. They run with the server user's permissions and can modify files even when file writes are off. Enable only on a trusted server for a task you understand.</p><p id="outlet-status" class="hint">Browser outlet: status not loaded yet.</p></fieldset>
           <label for="prompt" class="sr-only">Message or agent task</label>
           <input id="attach-file" type="file" hidden accept=".txt,.md,.json,.js,.jsx,.ts,.tsx,.css,.html,.py,.rs,.go,.java,.c,.h,.cpp,.yaml,.yml,.toml,.sh,.sql,.csv">
           <input id="attach-image" type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif">

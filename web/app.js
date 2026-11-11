@@ -1,7 +1,7 @@
-import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=2';
+import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, parseOutlets, outletSummary, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=3';
 
 const $ = id => document.getElementById(id);
-const VERSION = '1.8.1';
+const VERSION = '1.9.0';
 const TOKEN_KEY = 'fennec.workspace.tab-token';
 let token = '';
 try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch { /* Storage is optional. */ }
@@ -29,6 +29,8 @@ let recording = null;
 let sttBusy = false;
 let speech = null;
 let noticeTimer;
+let outlets = null;          // last /api/outlets reading; null until the server answers
+let outletsError = '';
 
 const safe = value => redact(value, token);
 function showError(id, message = '') {
@@ -189,6 +191,8 @@ function updateControls() {
   $('send-button').disabled = busy || !connected || !navigator.onLine || !$('prompt').value.trim() || connecting || engineStarting;
   $('prompt').disabled = busy;
   for (const id of ['mode-chat', 'mode-agent', 'new-session', 'clear-sessions', 'allow-write', 'allow-shell', 'max-tokens', 'temperature', 'thinking', 'attach-button', 'image-button']) $(id).disabled = busy;
+  // Selectable only while the server reports a browser outlet on this machine.
+  $('allow-web').disabled = busy || !outletReady();
   updateMic();
   const locked = busy && activeRun.phase !== 'pending';
   for (const id of ['token', 'remember-token', 'connect-button', 'disconnect-button']) $(id).disabled = connecting || locked;
@@ -209,6 +213,7 @@ function connectionState(message, state = 'offline') {
 function resetPermissions() {
   $('allow-write').checked = false;
   $('allow-shell').checked = false;
+  $('allow-web').checked = false;
 }
 function renderSessions() {
   $('session-list').replaceChildren();
@@ -295,6 +300,8 @@ function renderSession() {
   }
   $('mode-description').textContent = agent ? 'Real tools. Explicit permissions.' : 'Talk to the engine. No tools.';
   $('agent-permissions').hidden = !agent;
+  renderOutlets();
+  if (agent) maybeLoadOutlets();
   $('generation-settings').hidden = agent;
   $('max-tokens').required = !agent;
   $('temperature').required = !agent;
@@ -368,6 +375,7 @@ async function refreshHealth() {
     connected = true; engineReady = health.engine_running;
     $('workspace-root').textContent = safe(typeof health.workspace === 'string' ? health.workspace : 'Root configured on the server');
     connectionState(engineReady ? 'Engine online' : 'Engine offline', engineReady ? 'online' : 'offline');
+    maybeLoadOutlets();
     showError('connect-error');
     try {
       const telemetry = await api('/api/engine', { signal: controller.signal, timeout: 10000 });
@@ -386,6 +394,28 @@ async function refreshHealth() {
     if (!controller.signal.aborted && connected) healthTimer = setTimeout(refreshHealth, 15000);
     updateControls();
   }
+}
+function outletReady() {
+  return Boolean(outlets && (outlets.jev.present || outlets.openbot.present));
+}
+function renderOutlets() {
+  $('outlet-status').textContent = safe(outletsError || outletSummary(outlets));
+  if (!outletReady()) $('allow-web').checked = false;
+  updateControls();
+}
+async function refreshOutlets() {
+  try {
+    outlets = parseOutlets(await api('/api/outlets', { timeout: 10000 }));
+    outletsError = '';
+  } catch (error) {
+    outlets = null;
+    outletsError = `Browser outlet: status unavailable. ${error.message}`;
+    reportApiFailure(error);
+  }
+  renderOutlets();
+}
+function maybeLoadOutlets() {
+  if (connected && !outlets && !outletsError) refreshOutlets();
 }
 async function connect(event) {
   event?.preventDefault();
@@ -416,6 +446,7 @@ function disconnect() {
   stopSpeech();
   healthController?.abort(); fileController?.abort(); clearTimeout(healthTimer);
   connected = false; engineReady = false; token = ''; fileBusy = false;
+  outlets = null; outletsError = '';
   try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* Optional storage. */ }
   $('token').value = ''; $('token').placeholder = 'Enter server bearer token'; $('remember-token').checked = false;
   $('workspace-root').textContent = 'Root set by the server';
@@ -424,6 +455,7 @@ function disconnect() {
   $('file-name').textContent = 'No file selected'; $('file-content').textContent = 'Disconnected. No files are cached.';
   showError('connect-error'); showError('files-error');
   connectionState('Disconnected');
+  renderOutlets();
 }
 
 async function loadDirectory(path) {
@@ -594,6 +626,7 @@ async function submit(event) {
   if (!typed || activeRun || !connected || !navigator.onLine) return;
   if (!$('composer').reportValidity()) return;
   if (current.mode === 'agent' && $('allow-shell').checked && !window.confirm('Commands are NOT sandboxed. They can change or delete files with the server user’s permissions, including outside the workspace. Allow commands for this task?')) return;
+  if (current.mode === 'agent' && $('allow-web').checked && !window.confirm('The browser outlet drives a real browser on the server with its own accounts and history, and can act on the open web. Allow it for this task?')) return;
   showError('composer-error');
   showNotice();
   const session = current;
@@ -635,9 +668,10 @@ async function submit(event) {
       if (data.usage) appendItem(session, { type: 'system', content: `Usage: ${safe(data.usage)}` });
       finishRun(run, 'Response received');
     } else {
-      appendItem(session, { type: 'system', content: `Requested permissions · file writes: ${$('allow-write').checked ? 'allowed' : 'off'} · commands: ${$('allow-shell').checked ? 'allowed (NOT sandboxed)' : 'off'} · maximum 14 steps. Workspace root is selected by the server.` });
+      const browser = $('allow-web').checked ? `allowed (${outletSummary(outlets).replace('Browser outlet: ', '')})` : 'off';
+      appendItem(session, { type: 'system', content: `Requested permissions · file writes: ${$('allow-write').checked ? 'allowed' : 'off'} · commands: ${$('allow-shell').checked ? 'allowed (NOT sandboxed)' : 'off'} · browser outlet: ${browser} · maximum 14 steps. Workspace root is selected by the server.` });
       // Do not abort an in-flight start on Stop: first recover its ID, then cancel it.
-      const data = await api('/api/agent/start', { method: 'POST', body: { task: outgoing, allow_write: $('allow-write').checked, allow_shell: $('allow-shell').checked, max_steps: 14 }, timeout: 30000, signal: run.controller.signal });
+      const data = await api('/api/agent/start', { method: 'POST', body: { task: outgoing, allow_write: $('allow-write').checked, allow_shell: $('allow-shell').checked, allow_web: $('allow-web').checked, max_steps: 14 }, timeout: 30000, signal: run.controller.signal });
       if (typeof data.id !== 'string' || !data.id || data.id.length > 256) throw new ApiError('Start returned no valid task ID. The server may have started a task; inspect it before retrying.', 0, 'UNKNOWN_START');
       run.id = data.id; run.phase = 'running';
       appendItem(session, { type: 'system', content: `Server task ID: ${run.id}` });

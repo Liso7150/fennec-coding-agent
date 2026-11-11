@@ -82,6 +82,25 @@ export function pollWithinBounds(count, startedAt, now = Date.now()) {
   return count < LIMITS.polls && now - startedAt < LIMITS.runMs;
 }
 
+export function parseOutlets(data) {
+  if (!data || typeof data !== 'object') throw new Error('Invalid browser outlet response.');
+  const outlet = (entry, name) => {
+    if (!entry || typeof entry !== 'object') throw new Error(`The server reported no ${name} outlet.`);
+    const note = [entry.error, entry.note].find(value => typeof value === 'string' && value.trim());
+    return { present: entry.present === true, note: note ? note.trim().slice(0, 200) : '' };
+  };
+  return { jev: outlet(data.jev, 'Jev'), openbot: outlet(data.openbot, 'OpenBot') };
+}
+
+export function outletSummary(outlets) {
+  if (!outlets) return 'Browser outlet: status not loaded yet.';
+  const parts = [
+    `Jev ${outlets.jev.present ? 'ready' : 'not installed'}`,
+    `OpenBot ${outlets.openbot.present ? 'answering' : 'not answering'}`,
+  ];
+  return `Browser outlet: ${parts.join(' · ')}.`;
+}
+
 export function canInstallSecurely(locationLike, secureContext) {
   const host = locationLike.hostname;
   return Boolean(secureContext && (locationLike.protocol === 'https:' || (locationLike.protocol === 'http:' && (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host)))));

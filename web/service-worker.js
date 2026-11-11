@@ -1,10 +1,10 @@
 /* Cache the versioned static shell only. API traffic is never cached or intercepted. */
-const CACHE = 'fennec-shell-v3';
+const CACHE = 'fennec-shell-v4';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=3',
-  './helpers.js?v=2',
+  './app.js?v=4',
+  './helpers.js?v=3',
   './styles.css?v=2',
   './manifest.webmanifest?v=1',
   './icons/icon.svg?v=1',
