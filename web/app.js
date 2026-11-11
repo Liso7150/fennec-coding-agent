@@ -1,7 +1,7 @@
 import { ApiError, LIMITS, createApi, redact, normalizePath, parentPath, parseListing, parseChat, parseStt, parsePoll, pollWithinBounds, canInstallSecurely, delay, isImageDataUrl } from './helpers.js?v=2';
 
 const $ = id => document.getElementById(id);
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const TOKEN_KEY = 'fennec.workspace.tab-token';
 let token = '';
 try { token = sessionStorage.getItem(TOKEN_KEY) || ''; } catch { /* Storage is optional. */ }

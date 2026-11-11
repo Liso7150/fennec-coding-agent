@@ -50,7 +50,7 @@ test('service worker caches only the static shell', () => {
 
 test('the shell reports the app version', () => {
   assert.match(read('index.html'), /id="app-version"/);
-  assert.match(read('app.js'), /const VERSION = '1\.6\.0'/);
+  assert.match(read('app.js'), /const VERSION = '1\.7\.0'/);
   assert.match(read('app.js'), /\$\('app-version'\)\.textContent/);
 });
 
