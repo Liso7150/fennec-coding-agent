@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#15120F">
+  <meta name="theme-color" content="#0d0d0c">
   <meta name="description" content="Fennec coding workspace. Chat, run supervised agent tasks, and inspect your server workspace.">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="referrer" content="no-referrer">
@@ -13,7 +13,7 @@
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
-  <link rel="stylesheet" href="./styles.css?v=5">
+  <link rel="stylesheet" href="./styles.css?v=8">
 </head>
 <body>
   <a class="skip-link" href="#composer-input">Skip to composer</a>
@@ -25,13 +25,13 @@
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
       </svg>
       <span class="brand-name">Fennec</span>
-      <span class="brand-subtitle">Liso7150 / fennec</span>
+      <span class="brand-subtitle">Liso7150 / local-first workspace</span>
     </div>
     <div class="topbar-status">
       <span class="status-dot" data-state="online"></span>
-      <span class="status-text" id="backend-status">Connected</span>
-      <button id="inspector-toggle" class="icon-button" type="button" aria-label="Toggle inspector">⊟</button>
+      <span class="status-text" id="backend-status">Backend connected</span>
       <button id="settings-button" class="icon-button" type="button" aria-label="Settings">⚙</button>
+      <button id="inspector-toggle" class="icon-button" type="button" aria-label="Toggle inspector">⊟</button>
     </div>
   </header>
 
@@ -45,7 +45,8 @@
         <div class="workspace-name" id="workspace-name">Liso7150/fennec</div>
         <div class="workspace-meta">
           <span class="branch-name" id="branch-name">main</span>
-          <span class="version-badge">v2.0.0</span>
+          <span>·</span>
+          <span>Local mode</span>
         </div>
       </div>
 
@@ -72,16 +73,24 @@
       <div class="tasks-section">
         <div class="section-header">
           <span class="section-label">RECENT TASKS</span>
-          <span class="task-count" id="task-count">1</span>
         </div>
         <ul class="task-list" id="task-list" aria-label="Recent tasks">
           <li class="task-item active">
-            <div class="task-item-title">Backlog classification</div>
+            <div class="task-item-title">Audit Fennec workspace status</div>
             <div class="task-item-meta">
               <span class="task-status-dot running"></span>
               <span>Running</span>
               <span>·</span>
-              <span>06:13</span>
+              <span>Liso7150/fennec</span>
+            </div>
+          </li>
+          <li class="task-item">
+            <div class="task-item-title">Verify event-stream contracts</div>
+            <div class="task-item-meta">
+              <span class="task-status-dot complete"></span>
+              <span>Complete</span>
+              <span>·</span>
+              <span>fennec-core</span>
             </div>
           </li>
         </ul>
@@ -89,124 +98,41 @@
 
       <div class="user-section">
         <div class="user-name">Liso7150</div>
-        <div class="user-account">Local account · loopback runtime</div>
+        <div class="user-account">Local account</div>
       </div>
     </aside>
 
     <!-- Center panel: Timeline, task queue, composer -->
     <main class="center-panel">
+      <!-- Timeline header -->
+      <div class="timeline-header">
+        <div class="timeline-header-title">Liso7150/fennec · main</div>
+        <div class="timeline-header-main">
+          <div>
+            <h1>Fennec implementation status audit</h1>
+            <div class="timeline-header-subtitle">Chronological local-agent activity and verification for the active repository.</div>
+          </div>
+          <div class="status-badge">
+            <span class="dot"></span>
+            <span>Running</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Timeline / Chat history -->
       <div class="timeline" id="timeline" role="log" aria-label="Task timeline" aria-live="polite">
-
-        <!-- AI thought (collapsed by default) -->
-        <div class="message thought collapsed">
-          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <div class="message-avatar agent">🤖</div>
-            <span class="message-author agent">Fennec</span>
-            <span class="message-time">06:13</span>
-            <span class="collapse-indicator">▸</span>
-          </div>
-          <div class="message-body">
-            <p>Analyzing the backlog of 47 partial features across 11 modules. Grouping by dependency order: engine decode optimizations unblock desktop streaming, which unblocks JetBrains sync.</p>
-          </div>
-        </div>
-
-        <!-- Repository action (collapsed by default) -->
-        <div class="message action collapsed">
-          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <div class="message-avatar agent">📂</div>
-            <span class="message-author agent">Fennec</span>
-            <span class="message-time">06:14</span>
-            <span class="action-label">git status</span>
-            <span class="collapse-indicator">▸</span>
-          </div>
-          <div class="message-body">
-            <pre>On branch main
-3 files changed, 142 insertions(+)
-src/sched.rs - NPU tier integration
-src/prefetch.rs - SSD prefetch module
-README.md - updated device matrix</pre>
-          </div>
-        </div>
-
-        <!-- Attachment (Markdown) -->
-        <div class="message attachment">
-          <div class="message-header">
-            <div class="message-avatar agent">📎</div>
-            <span class="message-author agent">Fennec</span>
-            <span class="message-time">06:15</span>
-          </div>
-          <div class="message-body">
-            <div class="attachment-card">
-              <span class="attachment-icon">📄</span>
-              <span class="attachment-name">FENNEC-FEATURE-AUDIT-2026-11-16.md</span>
-              <span class="attachment-size">34 KB</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- File diff (collapsed by default) -->
-        <div class="message diff collapsed">
-          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <div class="message-avatar agent">📝</div>
-            <span class="message-author agent">Fennec</span>
-            <span class="message-time">06:16</span>
-            <span class="action-label">reviewed diff</span>
-            <span class="collapse-indicator">▸</span>
-          </div>
-          <div class="message-body">
-            <div class="diff-card">
-              <div class="diff-file">src/sched.rs</div>
-              <div class="diff-hunk">
-                <span class="diff-add">+    Npu,     // NPU dedicated memory</span>
-                <span class="diff-add">+    Disk,    // SSD - slowest</span>
-                <span class="diff-context">     Host,    // CPU RAM - fallback</span>
-              </div>
-              <div class="diff-stats">+24 / -3 lines</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- User message -->
-        <div class="message user">
-          <div class="message-header">
-            <div class="message-avatar user">👤</div>
-            <span class="message-author user">Liso7150</span>
-            <span class="message-time">06:17</span>
-          </div>
-          <div class="message-body">
-            <p>Continue all abandoned work across all repos</p>
-          </div>
-        </div>
-
-        <!-- Result text -->
-        <div class="message result">
-          <div class="message-header">
-            <div class="message-avatar agent">🤖</div>
-            <span class="message-author agent">Fennec</span>
-            <span class="message-time">06:18</span>
-            <span class="message-status">Complete</span>
-          </div>
-          <div class="message-body">
-            <p>Committed uncommitted changes across 6 repos (fennec-core, fennec-cli, fennec-desktop, fennec-coding-agent, engine-bench, shell-bench). Engine tests running in background. OpenBot workspace cloned and ready for setup.</p>
-          </div>
-        </div>
-
+        <!-- Messages will be dynamically inserted here -->
       </div>
 
       <!-- Task queue (only visible when AI is working on previous task) -->
-      <div class="task-queue" id="task-queue">
+      <div class="task-queue" id="task-queue" hidden>
         <div class="task-queue-header">
           <span class="task-queue-icon">☰</span>
-          <span class="task-queue-title">Queued while running</span>
-          <span class="task-queue-count">1 task</span>
+          <span class="task-queue-title">Task queue</span>
+          <span class="task-queue-count" id="task-queue-count">0 items</span>
         </div>
         <ul class="task-queue-list" id="task-queue-list">
-          <li class="task-queue-item">
-            <span class="queue-dot"></span>
-            <span class="queue-title">Continue all abandoned work across all repos</span>
-            <span class="queue-status">Queued</span>
-          </li>
+          <!-- Queue items will be dynamically inserted here -->
         </ul>
       </div>
 
@@ -218,7 +144,7 @@ README.md - updated device matrix</pre>
             <button class="tool-button" type="button" aria-label="Add" id="btn-add">+</button>
             <button class="tool-button" type="button" aria-label="Attach" id="btn-attach">📎</button>
             <button class="tool-button" type="button" aria-label="Dictate" id="btn-dictate">🎤</button>
-            <span class="composer-hint">Dictation available</span>
+            <span class="composer-hint">Hold to dictate</span>
           </div>
           <button class="send-button" id="send-button" type="button" disabled>
             <span>↑</span>
@@ -231,8 +157,8 @@ README.md - updated device matrix</pre>
     <aside class="right-panel" id="right-panel" aria-label="Context Inspector">
       <div class="inspector-header">
         <div>
-          <div class="inspector-title">Context</div>
-          <div class="inspector-subtitle">Workspace state</div>
+          <div class="inspector-title">Workspace context</div>
+          <div class="inspector-subtitle">Inspector</div>
         </div>
         <button class="icon-button" type="button" aria-label="Collapse inspector" id="inspector-collapse">⊟</button>
       </div>
@@ -241,18 +167,15 @@ README.md - updated device matrix</pre>
       <div class="inspector-section">
         <div class="inspector-section-header">
           <span>ACTIVE AGENTS</span>
-          <span class="section-count">3 tracked</span>
+          <span class="section-count" id="agent-count">1 online</span>
         </div>
         <div class="agent-item">
           <div class="agent-icon">🤖</div>
           <div class="agent-info">
             <div class="agent-name">Fennec</div>
-            <div class="agent-task">Backlog classification</div>
-            <div class="agent-status running">Running · 06:13</div>
+            <div class="agent-task">Coordinating workspace audit</div>
+            <div class="agent-status running">Running · 04:21</div>
           </div>
-        </div>
-        <div class="agent-note muted">
-          Jev and OpenBot remain capability-gated until outlet API, credentials, and lifecycle checks pass.
         </div>
       </div>
 
@@ -262,69 +185,46 @@ README.md - updated device matrix</pre>
           <span>WORKSPACE CONTEXT</span>
         </div>
         <div class="context-item">
-          <span class="context-icon">⚡</span>
+          <span class="context-icon">👥</span>
           <div class="context-info">
             <div class="context-label">Subagents</div>
-            <div class="context-value muted">2 outlets pending verification</div>
+            <div class="context-value muted">No active delegated agents</div>
           </div>
         </div>
         <div class="context-item">
           <span class="context-icon">📡</span>
           <div class="context-info">
             <div class="context-label">Processes</div>
-            <div class="context-value ok">ACP audit stream connected</div>
+            <div class="context-value ok">Event stream connected</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">🔧</span>
+          <span class="context-icon">⚡</span>
           <div class="context-info">
             <div class="context-label">Skills</div>
-            <div class="context-value muted">Release, repo, benchmark audit</div>
+            <div class="context-value muted">Repository inspection</div>
           </div>
         </div>
         <div class="context-item">
           <span class="context-icon">📦</span>
           <div class="context-info">
             <div class="context-label">Artifacts</div>
-            <div class="context-value muted">Results graphs and release evidence</div>
+            <div class="context-value muted" id="artifact-count">0 task artifacts</div>
           </div>
         </div>
         <div class="context-item">
           <span class="context-icon">🌐</span>
           <div class="context-info">
             <div class="context-label">Web Readings</div>
-            <div class="context-value muted">Backend and runtime evidence</div>
+            <div class="context-value muted">No linked readings</div>
           </div>
         </div>
         <div class="context-item">
           <span class="context-icon">🔗</span>
           <div class="context-info">
             <div class="context-label">Sources</div>
-            <div class="context-value muted">9 repos · docs · test matrices</div>
+            <div class="context-value muted">No task sources</div>
           </div>
-        </div>
-      </div>
-
-      <!-- Release & Verification -->
-      <div class="inspector-section">
-        <div class="inspector-section-header">
-          <span>RELEASE & VERIFICATION</span>
-        </div>
-        <div class="release-row">
-          <span class="release-version">1.9.0</span>
-          <span class="release-status warn">reconcile & verify</span>
-        </div>
-        <div class="release-row">
-          <span class="release-version">2.0.0</span>
-          <span class="release-status ok">version/test gate</span>
-        </div>
-        <div class="release-row">
-          <span class="release-version">2.5.0</span>
-          <span class="release-status muted">held by user</span>
-        </div>
-        <div class="release-row">
-          <span class="release-version">Matrix</span>
-          <span class="release-status warn">cross-repo pending</span>
         </div>
       </div>
 
@@ -372,224 +272,5 @@ README.md - updated device matrix</pre>
   </dialog>
 
   <noscript><div class="noscript">JavaScript is required for Fennec Workspace.</div></noscript>
-  <script>
-    // State
-    let isConnected = false;
-    let isAiWorking = false;
-    let hasQueuedTask = false;
-    let serverUrl = 'http://127.0.0.1:8787';
-
-    // DOM elements
-    const composerInput = document.getElementById('composer-input');
-    const sendButton = document.getElementById('send-button');
-    const btnAdd = document.getElementById('btn-add');
-    const btnAttach = document.getElementById('btn-attach');
-    const btnDictate = document.getElementById('btn-dictate');
-    const inspectorToggle = document.getElementById('inspector-toggle');
-    const inspectorCollapse = document.getElementById('inspector-collapse');
-    const rightPanel = document.getElementById('right-panel');
-    const taskQueue = document.getElementById('task-queue');
-    const timeline = document.getElementById('timeline');
-
-    // Enable send button when input has content
-    composerInput.addEventListener('input', () => {
-      sendButton.disabled = composerInput.value.trim().length === 0;
-    });
-
-    // Send message
-    sendButton.addEventListener('click', async () => {
-      const content = composerInput.value.trim();
-      if (!content) return;
-
-      // Add user message to timeline
-      addMessageToTimeline('user', 'Liso7150', content);
-      composerInput.value = '';
-      sendButton.disabled = true;
-
-      // If AI is working, show task queue
-      if (isAiWorking) {
-        hasQueuedTask = true;
-        updateTaskQueue();
-      } else {
-        // Simulate AI response
-        isAiWorking = true;
-        updateBackendStatus();
-        setTimeout(() => simulateAiResponse(content), 1000);
-      }
-    });
-
-    // Enter key to send
-    composerInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendButton.click();
-      }
-    });
-
-    // Toggle inspector
-    function toggleInspector() {
-      rightPanel.classList.toggle('collapsed');
-    }
-    inspectorToggle.addEventListener('click', toggleInspector);
-    inspectorCollapse.addEventListener('click', toggleInspector);
-
-    // Button handlers (placeholder functionality)
-    btnAdd.addEventListener('click', () => {
-      alert('Add functionality: Open file picker or command palette');
-    });
-
-    btnAttach.addEventListener('click', () => {
-      alert('Attach functionality: Open file attachment dialog');
-    });
-
-    btnDictate.addEventListener('click', () => {
-      alert('Dictation functionality: Start speech-to-text recording');
-    });
-
-    // Add message to timeline
-    function addMessageToTimeline(type, author, content, options = {}) {
-      const messageDiv = document.createElement('div');
-      messageDiv.className = `message ${type}`;
-      if (options.collapsed) messageDiv.classList.add('collapsed');
-
-      const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-      let headerHtml = '';
-      if (type === 'user') {
-        headerHtml = `
-          <div class="message-header">
-            <div class="message-avatar user">👤</div>
-            <span class="message-author user">${author}</span>
-            <span class="message-time">${time}</span>
-          </div>
-        `;
-      } else if (type === 'thought' || type === 'action') {
-        headerHtml = `
-          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <div class="message-avatar agent">${options.icon || '🤖'}</div>
-            <span class="message-author agent">${author}</span>
-            <span class="message-time">${time}</span>
-            ${options.actionLabel ? `<span class="action-label">${options.actionLabel}</span>` : ''}
-            <span class="collapse-indicator">▸</span>
-          </div>
-        `;
-      } else {
-        headerHtml = `
-          <div class="message-header">
-            <div class="message-avatar agent">${options.icon || '🤖'}</div>
-            <span class="message-author agent">${author}</span>
-            <span class="message-time">${time}</span>
-            ${options.status ? `<span class="message-status">${options.status}</span>` : ''}
-          </div>
-        `;
-      }
-
-      let bodyHtml = '';
-      if (type === 'attachment') {
-        bodyHtml = `
-          <div class="message-body">
-            <div class="attachment-card">
-              <span class="attachment-icon">📄</span>
-              <span class="attachment-name">${content}</span>
-              <span class="attachment-size">${options.size || '0 KB'}</span>
-            </div>
-          </div>
-        `;
-      } else if (type === 'diff') {
-        bodyHtml = `
-          <div class="message-body">
-            <div class="diff-card">
-              <div class="diff-file">${options.file || 'file.txt'}</div>
-              <div class="diff-hunk">${content}</div>
-              <div class="diff-stats">${options.stats || '+0 / -0 lines'}</div>
-            </div>
-          </div>
-        `;
-      } else {
-        bodyHtml = `<div class="message-body"><p>${content}</p></div>`;
-      }
-
-      messageDiv.innerHTML = headerHtml + bodyHtml;
-      timeline.appendChild(messageDiv);
-      timeline.scrollTop = timeline.scrollHeight;
-    }
-
-    // Simulate AI response
-    function simulateAiResponse(userMessage) {
-      // Add AI thought (collapsed)
-      addMessageToTimeline('thought', 'Fennec', 'Analyzing your request and planning the approach...', {
-        collapsed: true,
-        icon: '🤖'
-      });
-
-      setTimeout(() => {
-        // Add action (collapsed)
-        addMessageToTimeline('action', 'Fennec', 'Searching the codebase for relevant files...', {
-          collapsed: true,
-          icon: '🔍',
-          actionLabel: 'search'
-        });
-
-        setTimeout(() => {
-          // Add result
-          addMessageToTimeline('result', 'Fennec', `I've analyzed "${userMessage}" and found several relevant files. The changes would involve updating the main module and its dependencies.`, {
-            status: 'Complete'
-          });
-
-          isAiWorking = false;
-          updateBackendStatus();
-
-          // If there was a queued task, process it
-          if (hasQueuedTask) {
-            hasQueuedTask = false;
-            updateTaskQueue();
-          }
-        }, 1500);
-      }, 1000);
-    }
-
-    // Update task queue visibility
-    function updateTaskQueue() {
-      if (hasQueuedTask && isAiWorking) {
-        taskQueue.hidden = false;
-      } else {
-        taskQueue.hidden = true;
-      }
-    }
-
-    // Update backend status indicator
-    function updateBackendStatus() {
-      const statusDot = document.querySelector('.status-dot');
-      const statusText = document.getElementById('backend-status');
-      if (isConnected) {
-        statusDot.setAttribute('data-state', 'online');
-        statusText.textContent = 'Connected';
-      } else {
-        statusDot.setAttribute('data-state', 'error');
-        statusText.textContent = 'Disconnected';
-      }
-    }
-
-    // Initialize
-    updateTaskQueue();
-    updateBackendStatus();
-
-    // Connect to backend (placeholder)
-    async function connectToBackend() {
-      try {
-        const response = await fetch(`${serverUrl}/health`);
-        if (response.ok) {
-          isConnected = true;
-          updateBackendStatus();
-        }
-      } catch (e) {
-        isConnected = false;
-        updateBackendStatus();
-      }
-    }
-
-    // Try to connect on load
-    connectToBackend();
-  </script>
 </body>
 </html>

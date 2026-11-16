@@ -20,46 +20,6 @@ pub enum RepositoryStatus {
     Uninitialized,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GitRemote {
-    pub name: String,
-    pub url: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GitBranch {
-    pub name: String,
-    pub is_default: bool,
-    pub is_current: bool,
-    pub ahead: Option<usize>,
-    pub behind: Option<usize>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GitCommit {
-    pub hash: String,
-    pub message: String,
-    pub author: String,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GitFileChange {
-    pub path: String,
-    pub status: FileChangeStatus,
-    pub additions: Option<usize>,
-    pub deletions: Option<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FileChangeStatus {
-    Added,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitSyncStatus {
     UpToDate,
@@ -139,17 +99,5 @@ impl Repository {
             github_auth_available: false,
             pull_request_status: PullRequestStatus::None,
         }
-    }
-
-    pub fn can_perform(&self, capability: RepositoryCapability) -> bool {
-        self.capabilities.contains(&capability)
-    }
-
-    pub fn is_clean(&self) -> bool {
-        self.status == RepositoryStatus::Clean && self.changed_files == 0
-    }
-
-    pub fn has_conflicts(&self) -> bool {
-        self.status == RepositoryStatus::Conflict
     }
 }

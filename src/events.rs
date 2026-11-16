@@ -118,6 +118,17 @@ pub enum MessageContent {
     Mixed(Vec<MessageContent>),
 }
 
+impl MessageContent {
+    pub fn as_text(&self) -> String {
+        match self {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Code(c) => c.code.clone(),
+            MessageContent::Reasoning(r) => r.summary.clone(),
+            MessageContent::Mixed(parts) => parts.iter().map(|p| p.as_text()).collect::<Vec<_>>().join("\n"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CodeBlock {
     pub language: String,

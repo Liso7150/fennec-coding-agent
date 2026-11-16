@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct TaskId(pub String);
 
 impl TaskId {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
@@ -68,45 +69,4 @@ pub struct Task {
     pub artifacts: Vec<super::events::Artifact>,
     pub approvals: Vec<super::events::ApprovalRequest>,
     pub summary: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskAttentionItem {
-    pub id: String,
-    pub task_id: TaskId,
-    pub severity: AttentionSeverity,
-    pub title: String,
-    pub description: String,
-    pub source: AttentionSource,
-    pub created_at: DateTime<Utc>,
-    pub resolved: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttentionSeverity {
-    Info,
-    Warning,
-    Error,
-    Critical,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttentionSource {
-    Fennec,
-    Jev,
-    OpenBot,
-    Git,
-    FineTune,
-    Ide,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TaskSummary {
-    pub task_id: TaskId,
-    pub title: String,
-    pub status: TaskStatus,
-    pub duration_seconds: Option<f64>,
-    pub files_changed: usize,
-    pub tools_executed: usize,
-    pub summary: String,
 }

@@ -19,3 +19,5 @@ Cargo.lock
 *.bin.old
 fennec-coding-agent-*.exe
 fennec-coding-agent-*.bin
+.updater-cache/
+update-check.json

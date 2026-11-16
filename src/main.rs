@@ -21,8 +21,7 @@ mod task;
 mod agent;
 mod repository;
 mod events;
-mod api;
-mod app;
+mod updater;
 
 use task::{Task, TaskStatus, TaskId};
 use agent::{Agent, AgentIdentity, AgentStatus};
@@ -34,7 +33,6 @@ struct AppState {
     tasks: Arc<RwLock<Vec<Task>>>,
     agents: Arc<RwLock<Vec<Agent>>>,
     repositories: Arc<RwLock<Vec<Repository>>>,
-    active_task: Arc<RwLock<Option<TaskId>>>,
     events: Arc<RwLock<Vec<EventEnvelope>>>,
     event_tx: tokio::sync::broadcast::Sender<EventEnvelope>,
 }
@@ -46,7 +44,6 @@ impl AppState {
             tasks: Arc::new(RwLock::new(Vec::new())),
             agents: Arc::new(RwLock::new(Vec::new())),
             repositories: Arc::new(RwLock::new(Vec::new())),
-            active_task: Arc::new(RwLock::new(None)),
             events: Arc::new(RwLock::new(Vec::new())),
             event_tx,
         }
@@ -57,6 +54,37 @@ impl AppState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    // Parse CLI arguments
+    let args: Vec<String> = std::env::args().collect();
+    let experimental = args.iter().any(|a| a == "--experimental");
+
+    // Handle --experimental flag: update from source/main branch
+    if experimental {
+        eprintln!("[updater] Experimental mode: checking for dev updates...");
+        match updater::check_experimental().await {
+            Ok(Some(release)) => {
+                eprintln!("[updater] Dev version available: {}", release.version);
+                // In experimental mode, we'd pull from source
+                // For now, just report availability
+                eprintln!("[updater] Run `git pull` in the source directory to update");
+            }
+            Ok(None) => {
+                eprintln!("[updater] Already on latest dev version");
+            }
+            Err(e) => {
+                eprintln!("[updater] Experimental check failed: {}", e);
+            }
+        }
+        return;
+    }
+
+    // Pre-start auto-update: check for new version before starting the server
+    let current_version = env!("CARGO_PKG_VERSION");
+    if let Some(new_version) = updater::pre_start_update(current_version).await {
+        eprintln!("[updater] Updated to {}. Please restart.", new_version);
+        return;
+    }
+
     let state = AppState::new();
 
     let cors = CorsLayer::new()
@@ -66,6 +94,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/api/health", get(health_check))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/:id", get(get_task).delete(delete_task))
         .route("/api/tasks/:id/start", post(start_task))
@@ -238,7 +267,7 @@ async fn send_message(
                 id: Uuid::new_v4().to_string(),
                 task_id: task_id.clone(),
                 role: events::MessageRole::User,
-                content: events::MessageContent::Text(req.content),
+                content: events::MessageContent::Text(req.content.clone()),
                 attachments: Vec::new(),
                 status: events::MessageStatus::Sent,
                 created_at: Utc::now(),
@@ -247,12 +276,94 @@ async fn send_message(
 
             task.messages.push(message.clone());
             task.updated_at = Utc::now();
+            task.status = TaskStatus::Running;
 
             let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::MessageCreated)
                 .with_task(task_id.clone())
                 .with_payload(serde_json::json!({ "message_id": message.id }));
 
             let _ = state.event_tx.send(event);
+
+            // Spawn engine interaction in background
+            let engine = fennec_client::Engine::new();
+            let task_id_clone = task_id.clone();
+            let event_tx = state.event_tx.clone();
+            let tasks_ref = state.tasks.clone();
+            let messages: Vec<serde_json::Value> = task.messages.iter()
+                .filter(|m| matches!(m.role, events::MessageRole::User | events::MessageRole::Fennec))
+                .map(|m| serde_json::json!({
+                    "role": match m.role {
+                        events::MessageRole::User => "user",
+                        _ => "assistant",
+                    },
+                    "content": m.content.as_text()
+                }))
+                .collect();
+
+            std::thread::spawn(move || {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let msgs = serde_json::json!(messages);
+                engine.chat_stream(&msgs, 512, &tx, &cancel);
+
+                let mut full_response = String::new();
+                let mut reasoning = String::new();
+
+                for delta in rx {
+                    match delta {
+                        fennec_client::ChatDelta::Reasoning(r) => {
+                            reasoning.push_str(&r);
+                            let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::MessageStreamed)
+                                .with_task(task_id_clone.clone())
+                                .with_payload(serde_json::json!({ "kind": "reasoning", "text": r }));
+                            let _ = event_tx.send(event);
+                        }
+                        fennec_client::ChatDelta::Content(c) => {
+                            full_response.push_str(&c);
+                            let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::MessageStreamed)
+                                .with_task(task_id_clone.clone())
+                                .with_payload(serde_json::json!({ "kind": "content", "text": c }));
+                            let _ = event_tx.send(event);
+                        }
+                        fennec_client::ChatDelta::Done => {
+                            // Store the assistant message
+                            let assistant_msg = events::ChatMessage {
+                                id: Uuid::new_v4().to_string(),
+                                task_id: task_id_clone.clone(),
+                                role: events::MessageRole::Fennec,
+                                content: events::MessageContent::Text(full_response.clone()),
+                                attachments: Vec::new(),
+                                status: events::MessageStatus::Delivered,
+                                created_at: Utc::now(),
+                                updated_at: None,
+                            };
+                            if let Ok(mut tasks) = tasks_ref.try_write() {
+                                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id_clone) {
+                                    task.messages.push(assistant_msg);
+                                    task.status = TaskStatus::Complete;
+                                    task.updated_at = Utc::now();
+                                }
+                            }
+                            let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::TaskStatusChanged)
+                                .with_task(task_id_clone.clone())
+                                .with_progress(1.0, "complete".to_string());
+                            let _ = event_tx.send(event);
+                        }
+                        fennec_client::ChatDelta::Failed(e) => {
+                            let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::BackendDisconnected)
+                                .with_task(task_id_clone.clone())
+                                .with_error(format!("Engine stream failed: {e}"));
+                            let _ = event_tx.send(event);
+                            if let Ok(mut tasks) = tasks_ref.try_write() {
+                                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id_clone) {
+                                    task.status = TaskStatus::Failed;
+                                    task.updated_at = Utc::now();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
 
             Ok(Json(message))
         }
@@ -374,8 +485,6 @@ async fn handle_ws_connection(
     mut socket: axum::extract::ws::WebSocket,
     state: AppState,
 ) {
-    use futures::{SinkExt, StreamExt};
-
     let mut rx = state.event_tx.subscribe();
 
     while let Ok(event) = rx.recv().await {
