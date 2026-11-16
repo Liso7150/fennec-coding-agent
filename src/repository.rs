@@ -101,3 +101,112 @@ impl Repository {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_id_new_generates_unique_ids() {
+        let id1 = RepositoryId::new();
+        let id2 = RepositoryId::new();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn repository_id_round_trips_through_json() {
+        let id = RepositoryId("repo-abc-123".to_string());
+        let json = serde_json::to_string(&id).unwrap();
+        let decoded: RepositoryId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, decoded);
+    }
+
+    #[test]
+    fn repository_new_sets_defaults() {
+        let repo = Repository::new("fennec".to_string(), "/home/user/fennec".to_string());
+        assert_eq!(repo.name, "fennec");
+        assert_eq!(repo.local_path, "/home/user/fennec");
+        assert_eq!(repo.status, RepositoryStatus::Uninitialized);
+        assert_eq!(repo.sync_status, GitSyncStatus::Unknown);
+        assert_eq!(repo.pull_request_status, PullRequestStatus::None);
+        assert!(!repo.github_auth_available);
+        assert!(repo.remote_url.is_none());
+        assert!(repo.current_branch.is_none());
+        assert!(repo.capabilities.is_empty());
+        assert!(repo.last_opened.is_some());
+    }
+
+    #[test]
+    fn repository_status_round_trips() {
+        let statuses = vec![
+            RepositoryStatus::Clean,
+            RepositoryStatus::Dirty,
+            RepositoryStatus::Conflict,
+            RepositoryStatus::Detached,
+            RepositoryStatus::Uninitialized,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: RepositoryStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn git_sync_status_round_trips() {
+        let statuses = vec![
+            GitSyncStatus::UpToDate,
+            GitSyncStatus::Ahead,
+            GitSyncStatus::Behind,
+            GitSyncStatus::Diverged,
+            GitSyncStatus::Unknown,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: GitSyncStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn pull_request_status_round_trips() {
+        let statuses = vec![
+            PullRequestStatus::None,
+            PullRequestStatus::Open,
+            PullRequestStatus::Merged,
+            PullRequestStatus::Closed,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: PullRequestStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn repository_full_serialization_round_trip() {
+        let mut repo = Repository::new("test-repo".to_string(), "/tmp/test".to_string());
+        repo.remote_url = Some("https://github.com/test/repo.git".to_string());
+        repo.current_branch = Some("main".to_string());
+        repo.default_branch = Some("main".to_string());
+        repo.status = RepositoryStatus::Clean;
+        repo.sync_status = GitSyncStatus::UpToDate;
+        repo.changed_files = 3;
+        repo.staged_files = 1;
+        repo.ahead_count = Some(2);
+        repo.behind_count = None;
+        repo.capabilities = vec![RepositoryCapability::GitStatus, RepositoryCapability::FileReading];
+        repo.github_auth_available = true;
+        repo.pull_request_status = PullRequestStatus::Open;
+
+        let json = serde_json::to_string(&repo).unwrap();
+        let decoded: Repository = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.name, "test-repo");
+        assert_eq!(decoded.status, RepositoryStatus::Clean);
+        assert_eq!(decoded.sync_status, GitSyncStatus::UpToDate);
+        assert_eq!(decoded.changed_files, 3);
+        assert_eq!(decoded.ahead_count, Some(2));
+        assert!(decoded.github_auth_available);
+        assert_eq!(decoded.pull_request_status, PullRequestStatus::Open);
+    }
+}
