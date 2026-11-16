@@ -22,6 +22,7 @@ mod agent;
 mod repository;
 mod events;
 mod api;
+mod app;
 
 use task::{Task, TaskStatus, TaskId};
 use agent::{Agent, AgentIdentity, AgentStatus};
@@ -64,7 +65,6 @@ async fn main() {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/", get(serve_index))
         .route("/health", get(health_check))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/:id", get(get_task).delete(delete_task))
@@ -78,7 +78,7 @@ async fn main() {
         .route("/api/repositories/:id/status", get(repository_status))
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
-        .nest_service("/web", ServeDir::new("web"))
+        .fallback_service(ServeDir::new("web").fallback(get(serve_index)))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -90,8 +90,8 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn serve_index() -> Html<&'static str> {
-    Html(include_str!("../web/index.html"))
+async fn serve_index() -> impl IntoResponse {
+    app::render_audit_dashboard()
 }
 
 async fn health_check() -> Json<HealthResponse> {

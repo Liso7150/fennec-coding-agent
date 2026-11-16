@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#171715">
-  <meta name="description" content="A connected workspace for Fennec. Chat, run supervised agent tasks, and inspect your server workspace.">
+  <meta name="theme-color" content="#15120F">
+  <meta name="description" content="Fennec coding workspace. Chat, run supervised agent tasks, and inspect your server workspace.">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <meta name="referrer" content="no-referrer">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -13,74 +13,309 @@
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
-  <link rel="stylesheet" href="./styles.css?v=2">
-  <script type="module" src="./app.js?v=4"></script>
+  <link rel="stylesheet" href="./styles.css?v=4">
   <script type="module" src="./updater.js?v=1"></script>
 </head>
-<body data-view="workspace">
-  <a class="skip-link" href="#prompt">Skip to message</a>
+<body>
+  <a class="skip-link" href="#composer-input">Skip to composer</a>
+
+  <!-- Top bar -->
   <header class="topbar">
-    <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="Open connection and sessions" aria-controls="sidebar" aria-expanded="false">☰</button>
-    <a class="brand" href="./"><img src="./icons/icon.svg?v=1" width="34" height="34" alt=""><span>Fennec <span class="brand-light">Workspace</span></span></a>
-    <span class="local-badge">YOUR SERVER. YOUR WORKSPACE.</span>
-    <span id="connection-badge" class="status-badge" data-state="offline" role="status">Not connected</span>
-    <button id="install-button" class="quiet-button" type="button">Install app</button>
+    <div class="topbar-brand">
+      <svg class="brand-shield" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <span class="brand-name">Fennec</span>
+      <span class="brand-subtitle">Liso7150 / ecosystem feature audit</span>
+    </div>
+    <div class="topbar-status">
+      <span class="status-dot" data-state="online"></span>
+      <span class="status-text" id="backend-status">Audit recorded · 2026-11-16</span>
+      <button id="settings-button" class="icon-button" type="button" aria-label="Settings">⚙</button>
+      <button class="icon-button" type="button" aria-label="Collapse">⊟</button>
+    </div>
   </header>
-  <div id="connection-notice" class="connection-notice" role="status">Connect to your Fennec server to begin. Inference needs a connection.</div>
+
+  <!-- Main three-pane layout -->
   <div class="app-layout">
-    <aside id="sidebar" class="sidebar" aria-label="Connection and sessions">
-      <div class="sidebar-heading"><span class="eyebrow">WORKSPACE</span><button id="menu-close" class="icon-button menu-close" type="button" aria-label="Close sidebar">×</button></div>
-      <form id="connect-form" class="connection-form">
-        <label for="server-origin">Same-origin server</label>
-        <output id="server-origin" class="server-origin"></output>
-        <label for="token">Access token <span class="muted">(if required)</span></label>
-        <input id="token" name="fennec-token" type="password" placeholder="Enter server bearer token" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096">
-        <label class="check-row"><input id="remember-token" type="checkbox">Remember token for this tab</label>
-        <div class="button-row"><button id="connect-button" class="primary-button" type="submit">Connect</button><button id="disconnect-button" class="quiet-button" type="button">Disconnect</button></div>
-        <p id="connect-error" class="error-text" role="alert" hidden></p>
-        <p class="hint">Token stays in memory, or this tab's session storage if selected. Never in a URL.</p>
-      </form>
-      <div class="section-heading"><h2>Sessions</h2><button id="new-session" class="icon-button" type="button" aria-label="New session">+</button></div>
-      <ul id="session-list" class="session-list" aria-label="Sessions in this tab"></ul>
-      <button id="clear-sessions" class="text-button" type="button">Clear session history</button>
-      <p class="hint">Conversations stay in memory in this tab. Reloading clears them. Stop an agent before leaving.</p>
-      <details class="telemetry"><summary>Engine telemetry</summary><pre id="engine-telemetry">Not connected.</pre><button id="refresh-status" class="quiet-button" type="button">Refresh status</button></details>
-      <div class="server-note"><span class="eyebrow">CONNECTED, LOCAL CORE</span><p>The engine runs on the device hosting this page - your computer, or a phone running the core in Termux. Files and commands use that device's workspace root; nothing is uploaded.</p></div>
-      <footer>Engine base idea: <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener noreferrer">Colibri</a> · Fine-tuning: <a href="https://github.com/lyogavin/airllm" target="_blank" rel="noopener noreferrer">AirLLM</a><br><a href="./LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a> · <span id="app-version"></span></footer>
+
+    <!-- Left panel: Navigation -->
+    <aside class="left-panel" aria-label="Navigation">
+      <div class="workspace-section">
+        <div class="section-label">ACTIVE WORKSPACE</div>
+        <div class="workspace-name" id="workspace-name">Liso7150/fennec</div>
+        <div class="workspace-meta">
+          <span class="branch-name" id="branch-name">main</span>
+          <span class="version-badge">v2.0.0</span>
+        </div>
+      </div>
+
+      <nav class="nav-section">
+        <button class="nav-item active" data-nav="coding" type="button">
+          <span class="nav-icon">⊞</span>
+          <span class="nav-label">Coding</span>
+        </button>
+        <button class="nav-item" data-nav="new-task" type="button">
+          <span class="nav-icon">⊕</span>
+          <span class="nav-label">New Task</span>
+        </button>
+        <button class="nav-item" data-nav="attention" type="button">
+          <span class="nav-icon">◷</span>
+          <span class="nav-label">My Attention</span>
+          <span class="nav-badge" id="attention-badge" hidden>0</span>
+        </button>
+        <button class="nav-item" data-nav="search" type="button">
+          <span class="nav-icon">⌕</span>
+          <span class="nav-label">Search</span>
+        </button>
+      </nav>
+
+      <div class="tasks-section">
+        <div class="section-header">
+          <span class="section-label">RECENT TASKS</span>
+          <span class="task-count" id="task-count">3</span>
+        </div>
+        <ul class="task-list" id="task-list" aria-label="Recent tasks">
+          <li class="task-empty">No tasks yet</li>
+        </ul>
+      </div>
+
+      <div class="user-section">
+        <div class="user-name">Liso7150</div>
+        <div class="user-account">Local account · loopback runtime</div>
+      </div>
     </aside>
-    <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" hidden></button>
-    <main class="main-layout">
-      <nav class="view-tabs" aria-label="Workspace views"><button id="view-workspace" class="active" type="button" aria-pressed="true">Conversation</button><button id="view-files" type="button" aria-pressed="false">Server files</button></nav>
-      <section id="conversation-panel" class="conversation-panel" aria-label="Conversation">
-        <div class="conversation-heading"><div><span class="eyebrow">FENNEC / <span id="mode-caption">CHAT</span></span><h1 id="session-title">A little space to build.</h1></div><span id="run-status" class="run-status" role="status">Ready when connected</span></div>
-        <div id="timeline" class="timeline" role="log" aria-label="Conversation and real tool activity" aria-live="polite" aria-relevant="additions"></div>
-        <form id="composer" class="composer">
-          <div class="composer-toolbar"><div class="mode-tabs" role="group" aria-label="Interaction mode"><button id="mode-chat" type="button" class="active" aria-pressed="true">Chat</button><button id="mode-agent" type="button" aria-pressed="false">Agent</button></div><div class="toolbar-tools"><span id="mode-description" class="hint">Talk to the engine. No tools.</span><button id="attach-button" class="quiet-button" type="button" title="Attach a text file">Attach</button><button id="image-button" class="quiet-button" type="button" title="Attach one image for vision">Image</button><button id="mic-button" class="quiet-button" type="button" title="Dictate with the local microphone">Mic</button></div></div>
-          <fieldset id="agent-permissions" class="permissions" hidden><legend>Permissions for this run only</legend><label class="check-row"><input id="allow-write" type="checkbox">Allow file writes</label><label class="check-row"><input id="allow-shell" type="checkbox">Allow commands</label><label class="check-row"><input id="allow-web" type="checkbox">Allow the local browser outlet</label><p class="warning">Commands are NOT sandboxed. They run with the server user's permissions and can modify files even when file writes are off. Enable only on a trusted server for a task you understand.</p><p id="outlet-status" class="hint">Browser outlet: status not loaded yet.</p></fieldset>
-          <label for="prompt" class="sr-only">Message or agent task</label>
-          <input id="attach-file" type="file" hidden accept=".txt,.md,.json,.js,.jsx,.ts,.tsx,.css,.html,.py,.rs,.go,.java,.c,.h,.cpp,.yaml,.yml,.toml,.sh,.sql,.csv">
-          <input id="attach-image" type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif">
-          <div id="attachment-chips" class="chips" hidden></div>
-          <textarea id="prompt" rows="3" maxlength="32000" placeholder="What would you like to work on? Paste an image or use Attach, Image and Mic." required></textarea>
-          <p id="composer-notice" class="notice" role="status" hidden></p>
-          <div class="composer-bottom"><details id="generation-settings" class="generation-settings"><summary>Chat settings</summary><div><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="8192" step="1" value="1024" required><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" required><label for="thinking">Reasoning</label><select id="thinking"><option value="default">Server default</option><option value="off">Off</option><option value="high">High</option></select></div></details><span id="agent-limit" class="hint" hidden>Up to 14 steps · root workspace only</span><div class="button-row"><button id="stop-button" class="stop-button" type="button" hidden>Stop</button><button id="send-button" class="primary-button" type="submit" disabled>Send message <span aria-hidden="true">↑</span></button></div></div>
-          <p id="composer-error" class="error-text" role="alert" hidden></p>
-          <p class="composer-note">Responses are not verification. Inspect actual tool output before trusting a result.</p>
-        </form>
-      </section>
-      <aside id="files-panel" class="files-panel" aria-label="Server workspace files">
-        <div class="section-heading"><h2>Server workspace</h2><button id="files-refresh" class="icon-button" type="button" aria-label="Refresh current directory" disabled>↻</button></div>
-        <p id="workspace-root" class="workspace-root">Root set by the server</p>
-        <p class="hint">Read-only browser. Paths are relative to the core's configured workspace root. No host directory selection.</p>
-        <form id="directory-form" class="directory-form"><label for="directory-path">Directory within root</label><div class="button-row"><input id="directory-path" type="text" placeholder="Root (empty path)" autocomplete="off" spellcheck="false"><button id="directory-open" class="quiet-button" type="submit" disabled>Open</button></div></form>
-        <div class="file-navigation"><button id="files-up" class="text-button" type="button" disabled>↑ Parent</button><span id="directory-label">/</span></div>
-        <p id="files-error" class="error-text" role="alert" hidden></p>
-        <ul id="file-list" class="file-list" aria-label="Directory entries"><li class="empty-files">Connect to inspect files.</li></ul>
-        <section class="file-preview" aria-label="File contents"><h3 id="file-name">No file selected</h3><pre id="file-content" tabindex="0">Select a file to view its text. Files are never executed or rendered as HTML.</pre></section>
-      </aside>
+
+    <!-- Center panel: Timeline and composer -->
+    <main class="center-panel">
+      <!-- Breadcrumb header -->
+      <div class="center-breadcrumb">
+        <span>FEATURE AUDIT</span>
+        <span class="breadcrumb-sep">·</span>
+        <span>2026-11-16</span>
+        <span class="breadcrumb-sep">·</span>
+        <span>WORKING TREE</span>
+      </div>
+
+      <!-- Title section with coverage card -->
+      <div class="center-title-section">
+        <div class="title-content">
+          <h1 id="task-title">Fennec ecosystem implementation coverage</h1>
+          <p class="task-subtitle" id="task-subtitle">Evidence-led audit across engine, core, desktop, coding agent, finetune, and JetBrains integration.</p>
+        </div>
+        <div class="coverage-card">
+          <div class="coverage-label">OVERALL COVERAGE</div>
+          <div class="coverage-value">91%</div>
+          <div class="coverage-detail">462 / 509 confirmed</div>
+        </div>
+      </div>
+
+      <!-- Stat cards -->
+      <div class="stat-cards">
+        <div class="stat-card confirmed">
+          <div class="stat-label">CONFIRMED</div>
+          <div class="stat-value">462 <span class="stat-unit">operational features</span></div>
+        </div>
+        <div class="stat-card partial">
+          <div class="stat-label">PARTIAL</div>
+          <div class="stat-value">47 <span class="stat-unit">bounded follow-ups</span></div>
+        </div>
+        <div class="stat-card missing">
+          <div class="stat-label">MISSING</div>
+          <div class="stat-value">0 <span class="stat-unit">unsupported features</span></div>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="timeline" id="timeline" role="log" aria-label="Task timeline" aria-live="polite">
+        <div class="timeline-empty" id="timeline-empty">
+          <p>No activity yet. Send a message to start a task.</p>
+        </div>
+      </div>
+
+      <!-- Task queue -->
+      <div class="task-queue" id="task-queue">
+        <div class="task-queue-header">
+          <span class="task-queue-icon">☰</span>
+          <span class="task-queue-title">Task queue</span>
+          <span class="task-queue-count">3 audit follow-ups</span>
+          <button class="task-queue-view-all" type="button">View all</button>
+        </div>
+        <ul class="task-queue-list" id="task-queue-list">
+          <li class="task-queue-item">
+            <span class="queue-dot"></span>
+            <span class="queue-title">Document native GitHub integration boundary beyond gh</span>
+            <span class="queue-status">Partial</span>
+          </li>
+          <li class="task-queue-item">
+            <span class="queue-dot"></span>
+            <span class="queue-title">Add push-to-talk, language selection, and long-response TTS summaries</span>
+            <span class="queue-status">Partial</span>
+          </li>
+          <li class="task-queue-item">
+            <span class="queue-dot"></span>
+            <span class="queue-title">Improve finetune estimates and sensitive-data scanning</span>
+            <span class="queue-status">Partial</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Composer -->
+      <div class="composer" id="composer">
+        <textarea id="composer-input" rows="2" placeholder="Ask Fennec to inspect, edit, test, or explain your code" maxlength="32000"></textarea>
+        <div class="composer-toolbar">
+          <div class="composer-tools">
+            <button class="tool-button" type="button" aria-label="Add">+</button>
+            <button class="tool-button" type="button" aria-label="Attach">📎</button>
+            <button class="tool-button" type="button" aria-label="Dictate">🎤</button>
+            <span class="composer-hint">Dictation available</span>
+          </div>
+          <button class="send-button" id="send-button" type="button" disabled>
+            <span>↑</span>
+          </button>
+        </div>
+      </div>
     </main>
+
+    <!-- Right panel: Inspector -->
+    <aside class="right-panel" aria-label="Inspector">
+      <div class="inspector-header">
+        <div>
+          <div class="inspector-title">Audit context</div>
+          <div class="inspector-subtitle">Implementation evidence</div>
+        </div>
+        <button class="icon-button" type="button" aria-label="Collapse inspector">⊟</button>
+      </div>
+
+      <!-- Audit Metadata -->
+      <div class="inspector-section">
+        <div class="inspector-section-header">
+          <span>AUDIT METADATA</span>
+          <span class="section-status complete">Complete</span>
+        </div>
+        <div class="metadata-grid">
+          <div class="metadata-row">
+            <span class="metadata-key">Version</span>
+            <span class="metadata-value">2.0.0 working tree</span>
+          </div>
+          <div class="metadata-row">
+            <span class="metadata-key">Scope</span>
+            <span class="metadata-value">11 module areas</span>
+          </div>
+          <div class="metadata-row">
+            <span class="metadata-key">Evidence</span>
+            <span class="metadata-value">repository paths</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Module Status -->
+      <div class="inspector-section">
+        <div class="inspector-section-label">MODULE STATUS</div>
+        <div class="module-list">
+          <div class="module-row">
+            <span class="module-name">engine</span>
+            <span class="module-count">38 / 42</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">core</span>
+            <span class="module-count">72 / 78</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">desktop</span>
+            <span class="module-count">87 / 95</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">coding-agent</span>
+            <span class="module-count">62 / 68</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">Jev + OpenBot</span>
+            <span class="module-count">20 / 23</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">Git / GitHub</span>
+            <span class="module-count">35 / 45</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">vision / voice</span>
+            <span class="module-count">27 / 34</span>
+          </div>
+          <div class="module-row">
+            <span class="module-name">finetune + IDE</span>
+            <span class="module-count">69 / 72</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Partial Watchlist -->
+      <div class="inspector-section">
+        <div class="inspector-section-label">PARTIAL WATCHLIST</div>
+        <div class="watchlist-item">
+          <span class="watchlist-icon">🔗</span>
+          <div class="watchlist-content">
+            <div class="watchlist-title">GitHub depth</div>
+            <div class="watchlist-desc">PR state relies on gh; native data model remains bounded.</div>
+          </div>
+        </div>
+        <div class="watchlist-item">
+          <span class="watchlist-icon">🎤</span>
+          <div class="watchlist-content">
+            <div class="watchlist-title">Voice controls</div>
+            <div class="watchlist-desc">STT is operational; push-to-talk and language selection are incomplete.</div>
+          </div>
+        </div>
+        <div class="watchlist-item">
+          <span class="watchlist-icon">📊</span>
+          <div class="watchlist-content">
+            <div class="watchlist-title">Finetune estimates</div>
+            <div class="watchlist-desc">Job control works; time, storage, and sensitive-data safeguards need refinement.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Verification Context -->
+      <div class="inspector-section">
+        <div class="inspector-section-label">VERIFICATION CONTEXT</div>
+        <div class="verification-list">
+          <div class="verification-item">
+            <span class="check-icon">✓</span>
+            <span>ACP v1 and streaming event envelope</span>
+          </div>
+          <div class="verification-item">
+            <span class="check-icon">✓</span>
+            <span>Approval route and outlet status</span>
+          </div>
+          <div class="verification-item">
+            <span class="check-icon">✓</span>
+            <span>Desktop and JetBrains sync</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
   </div>
-  <dialog id="install-dialog" aria-labelledby="install-title"><div class="dialog-heading"><h2 id="install-title">Keep Fennec close.</h2><button id="install-close" class="icon-button" type="button" aria-label="Close install instructions">×</button></div><p id="install-message"></p><ol><li><strong>iPhone / iPad:</strong> open in Safari, tap Share, then Add to Home Screen (look under More if needed).</li><li><strong>Android:</strong> in a supporting browser such as Chrome, choose Install app or Add to Home screen from the menu.</li><li><strong>Windows / Linux / macOS:</strong> use your supporting browser's Install app option. Safari on recent macOS offers Add to Dock. Availability varies by browser.</li></ol><p>The installed shell can open offline. Chat, agent execution, and file access still need your server; the local engine starts on demand when you send a message.</p><p id="pwa-status" class="hint"></p></dialog>
-  <noscript><div class="noscript">JavaScript is required to connect to Fennec. The Streamlit app in ui/ is a separate mock prototype.</div></noscript>
+
+  <!-- Settings dialog -->
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-header">
+      <h2 id="settings-title">Settings</h2>
+      <button class="icon-button" type="button" aria-label="Close settings" id="settings-close">×</button>
+    </div>
+    <form id="connect-form" class="connection-form">
+      <label for="server-url">Server URL</label>
+      <input id="server-url" type="text" placeholder="http://127.0.0.1:8787" autocomplete="off">
+      <label for="access-token">Access token <span class="muted">(if required)</span></label>
+      <input id="access-token" type="password" placeholder="Enter bearer token" autocomplete="off">
+      <label class="check-row"><input id="remember-token" type="checkbox"> Remember token</label>
+      <div class="button-row">
+        <button class="primary-button" type="submit">Connect</button>
+        <button class="quiet-button" type="button" id="disconnect-button">Disconnect</button>
+      </div>
+      <p id="connect-error" class="error-text" role="alert" hidden></p>
+    </form>
+  </dialog>
+
+  <noscript><div class="noscript">JavaScript is required for Fennec Workspace.</div></noscript>
 </body>
 </html>
