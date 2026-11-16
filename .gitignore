@@ -9,3 +9,11 @@ release/
 .DS_Store
 *.egg-info/
 .pytest_cache/
+
+# Auto-update artifacts
+*.old
+*.new
+*.exe.old
+*.bin.old
+fennec-coding-agent-*.exe
+fennec-coding-agent-*.bin
