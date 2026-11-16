@@ -388,3 +388,102 @@ struct GitHubCommitDetail {
 struct GitHubAuthor {
     date: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_current_detects_os() {
+        let platform = Platform::current();
+        assert!(!platform.os.is_empty());
+        assert!(!platform.arch.is_empty());
+        assert!(!platform.ext.is_empty());
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(platform.os, "windows");
+            assert_eq!(platform.ext, "exe");
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(platform.os, "macos");
+            assert_eq!(platform.ext, "bin");
+        } else if cfg!(target_os = "linux") {
+            assert_eq!(platform.os, "linux");
+            assert_eq!(platform.ext, "bin");
+        }
+    }
+
+    #[test]
+    fn platform_asset_name_windows() {
+        let platform = Platform {
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+            ext: "exe".to_string(),
+        };
+        assert_eq!(
+            platform.asset_name("fennec-agent"),
+            "fennec-agent-windows-x86_64.exe"
+        );
+    }
+
+    #[test]
+    fn platform_asset_name_unix() {
+        let platform = Platform {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            ext: "bin".to_string(),
+        };
+        assert_eq!(
+            platform.asset_name("fennec-agent"),
+            "fennec-agent-linux-x86_64"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_computes_correct_hash() {
+        let empty_hash = sha256_hex(b"");
+        assert_eq!(
+            empty_hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        let hello_hash = sha256_hex(b"hello");
+        assert_eq!(
+            hello_hash,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn channel_round_trips() {
+        let stable = Channel::Stable;
+        let json = serde_json::to_string(&stable).unwrap();
+        let decoded: Channel = serde_json::from_str(&json).unwrap();
+        assert_eq!(stable, decoded);
+
+        let experimental = Channel::Experimental;
+        let json = serde_json::to_string(&experimental).unwrap();
+        let decoded: Channel = serde_json::from_str(&json).unwrap();
+        assert_eq!(experimental, decoded);
+    }
+
+    #[test]
+    fn release_serialization() {
+        let release = Release {
+            version: "1.0.0".to_string(),
+            tag: "v1.0.0".to_string(),
+            published_at: "2026-11-17T00:00:00Z".to_string(),
+            assets: vec![Asset {
+                name: "fennec-agent-windows-x86_64.exe".to_string(),
+                download_url: "https://example.com/download".to_string(),
+                size: 1024,
+            }],
+            checksums_url: Some("https://example.com/checksums".to_string()),
+        };
+        let json = serde_json::to_string(&release).unwrap();
+        let decoded: Release = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.version, "1.0.0");
+        assert_eq!(decoded.tag, "v1.0.0");
+        assert_eq!(decoded.assets.len(), 1);
+        assert_eq!(decoded.assets[0].size, 1024);
+    }
+}

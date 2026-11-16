@@ -308,3 +308,234 @@ pub struct ApprovalResolution {
     pub resolved_at: DateTime<Utc>,
     pub resolved_by: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_envelope_new_sets_defaults() {
+        let event = EventEnvelope::new(AgentIdentity::Fennec, EventType::TaskCreated);
+        assert_eq!(event.agent_identity, AgentIdentity::Fennec);
+        assert_eq!(event.event_type, EventType::TaskCreated);
+        assert_eq!(event.status, "created");
+        assert_eq!(event.progress, 0.0);
+        assert!(event.task_id.is_none());
+        assert!(event.payload.is_none());
+        assert!(event.error.is_none());
+        assert!(!event.event_id.is_empty());
+    }
+
+    #[test]
+    fn event_envelope_builder_chain() {
+        let task_id = TaskId("task-123".to_string());
+        let event = EventEnvelope::new(AgentIdentity::Jev, EventType::MessageCreated)
+            .with_task(task_id.clone())
+            .with_progress(0.5, "running".to_string())
+            .with_payload(serde_json::json!({"key": "value"}))
+            .with_error("test error".to_string());
+
+        assert_eq!(event.task_id, Some(task_id));
+        assert_eq!(event.progress, 0.5);
+        assert_eq!(event.status, "error");
+        assert!(event.payload.is_some());
+        assert_eq!(event.error, Some("test error".to_string()));
+    }
+
+    #[test]
+    fn event_type_round_trips() {
+        let types = vec![
+            EventType::TaskCreated,
+            EventType::TaskSelected,
+            EventType::TaskStatusChanged,
+            EventType::MessageCreated,
+            EventType::MessageStreamed,
+            EventType::PlanUpdated,
+            EventType::ToolStarted,
+            EventType::ToolProgressUpdated,
+            EventType::ToolCompleted,
+            EventType::ToolFailed,
+            EventType::ArtifactCreated,
+            EventType::ArtifactUpdated,
+            EventType::AgentDelegated,
+            EventType::AgentStatusChanged,
+            EventType::ApprovalRequested,
+            EventType::GitStatusChanged,
+            EventType::GitOperationProgress,
+            EventType::VoiceStateChanged,
+            EventType::VisionAnalysisCompleted,
+            EventType::FineTuneJobProgress,
+            EventType::BackendDisconnected,
+            EventType::BackendReconnected,
+        ];
+        for et in types {
+            let json = serde_json::to_string(&et).unwrap();
+            let decoded: EventType = serde_json::from_str(&json).unwrap();
+            assert_eq!(et, decoded);
+        }
+    }
+
+    #[test]
+    fn message_role_round_trips() {
+        let roles = vec![
+            MessageRole::User,
+            MessageRole::Fennec,
+            MessageRole::Jev,
+            MessageRole::OpenBot,
+            MessageRole::Tool,
+            MessageRole::System,
+            MessageRole::Verification,
+        ];
+        for role in roles {
+            let json = serde_json::to_string(&role).unwrap();
+            let decoded: MessageRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(role, decoded);
+        }
+    }
+
+    #[test]
+    fn message_content_as_text() {
+        let text = MessageContent::Text("hello".to_string());
+        assert_eq!(text.as_text(), "hello");
+
+        let code = MessageContent::Code(CodeBlock {
+            language: "rust".to_string(),
+            code: "fn main() {}".to_string(),
+            filename: Some("main.rs".to_string()),
+        });
+        assert_eq!(code.as_text(), "fn main() {}");
+
+        let reasoning = MessageContent::Reasoning(ReasoningSummary {
+            summary: "thinking...".to_string(),
+            plan: None,
+            progress: None,
+        });
+        assert_eq!(reasoning.as_text(), "thinking...");
+
+        let mixed = MessageContent::Mixed(vec![
+            MessageContent::Text("part1".to_string()),
+            MessageContent::Text("part2".to_string()),
+        ]);
+        assert_eq!(mixed.as_text(), "part1\npart2");
+    }
+
+    #[test]
+    fn message_status_round_trips() {
+        let statuses = vec![
+            MessageStatus::Pending,
+            MessageStatus::Sent,
+            MessageStatus::Delivered,
+            MessageStatus::Failed,
+            MessageStatus::Cancelled,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: MessageStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn attachment_kind_round_trips() {
+        let kinds = vec![
+            AttachmentKind::Image,
+            AttachmentKind::File,
+            AttachmentKind::Screenshot,
+            AttachmentKind::Log,
+            AttachmentKind::Diff,
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let decoded: AttachmentKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, decoded);
+        }
+    }
+
+    #[test]
+    fn tool_event_kind_round_trips() {
+        let kinds = vec![
+            ToolEventKind::InspectRepository,
+            ToolEventKind::ReadFile,
+            ToolEventKind::SearchCode,
+            ToolEventKind::CreateFile,
+            ToolEventKind::EditFile,
+            ToolEventKind::DeleteFile,
+            ToolEventKind::ReviewDiff,
+            ToolEventKind::RunCommand,
+            ToolEventKind::RunTestSuite,
+            ToolEventKind::BuildProject,
+            ToolEventKind::LintProject,
+            ToolEventKind::FormatProject,
+            ToolEventKind::SearchDocumentation,
+            ToolEventKind::OpenUrl,
+            ToolEventKind::AnalyzeImage,
+            ToolEventKind::GenerateArtifact,
+            ToolEventKind::VerifyImplementation,
+            ToolEventKind::GitFetch,
+            ToolEventKind::GitPull,
+            ToolEventKind::GitCommit,
+            ToolEventKind::GitPush,
+            ToolEventKind::PullRequestOperation,
+            ToolEventKind::FineTuneModel,
+            ToolEventKind::EvaluateFineTunedModel,
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let decoded: ToolEventKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, decoded);
+        }
+    }
+
+    #[test]
+    fn tool_event_status_round_trips() {
+        let statuses = vec![
+            ToolEventStatus::Running,
+            ToolEventStatus::Complete,
+            ToolEventStatus::Warning,
+            ToolEventStatus::Failed,
+            ToolEventStatus::Cancelled,
+            ToolEventStatus::WaitingForApproval,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: ToolEventStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+
+    #[test]
+    fn artifact_kind_round_trips() {
+        let kinds = vec![
+            ArtifactKind::Diff,
+            ArtifactKind::Build,
+            ArtifactKind::Test,
+            ArtifactKind::Image,
+            ArtifactKind::Summary,
+            ArtifactKind::Report,
+            ArtifactKind::Documentation,
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let decoded: ArtifactKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, decoded);
+        }
+    }
+
+    #[test]
+    fn artifact_status_round_trips() {
+        let statuses = vec![
+            ArtifactStatus::Added,
+            ArtifactStatus::Modified,
+            ArtifactStatus::Deleted,
+            ArtifactStatus::Generated,
+            ArtifactStatus::Reviewed,
+            ArtifactStatus::Failed,
+            ArtifactStatus::Pending,
+        ];
+        for status in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            let decoded: ArtifactStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, decoded);
+        }
+    }
+}
