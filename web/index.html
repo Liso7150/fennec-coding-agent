@@ -372,5 +372,224 @@ README.md - updated device matrix</pre>
   </dialog>
 
   <noscript><div class="noscript">JavaScript is required for Fennec Workspace.</div></noscript>
+  <script>
+    // State
+    let isConnected = false;
+    let isAiWorking = false;
+    let hasQueuedTask = false;
+    let serverUrl = 'http://127.0.0.1:8787';
+
+    // DOM elements
+    const composerInput = document.getElementById('composer-input');
+    const sendButton = document.getElementById('send-button');
+    const btnAdd = document.getElementById('btn-add');
+    const btnAttach = document.getElementById('btn-attach');
+    const btnDictate = document.getElementById('btn-dictate');
+    const inspectorToggle = document.getElementById('inspector-toggle');
+    const inspectorCollapse = document.getElementById('inspector-collapse');
+    const rightPanel = document.getElementById('right-panel');
+    const taskQueue = document.getElementById('task-queue');
+    const timeline = document.getElementById('timeline');
+
+    // Enable send button when input has content
+    composerInput.addEventListener('input', () => {
+      sendButton.disabled = composerInput.value.trim().length === 0;
+    });
+
+    // Send message
+    sendButton.addEventListener('click', async () => {
+      const content = composerInput.value.trim();
+      if (!content) return;
+
+      // Add user message to timeline
+      addMessageToTimeline('user', 'Liso7150', content);
+      composerInput.value = '';
+      sendButton.disabled = true;
+
+      // If AI is working, show task queue
+      if (isAiWorking) {
+        hasQueuedTask = true;
+        updateTaskQueue();
+      } else {
+        // Simulate AI response
+        isAiWorking = true;
+        updateBackendStatus();
+        setTimeout(() => simulateAiResponse(content), 1000);
+      }
+    });
+
+    // Enter key to send
+    composerInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendButton.click();
+      }
+    });
+
+    // Toggle inspector
+    function toggleInspector() {
+      rightPanel.classList.toggle('collapsed');
+    }
+    inspectorToggle.addEventListener('click', toggleInspector);
+    inspectorCollapse.addEventListener('click', toggleInspector);
+
+    // Button handlers (placeholder functionality)
+    btnAdd.addEventListener('click', () => {
+      alert('Add functionality: Open file picker or command palette');
+    });
+
+    btnAttach.addEventListener('click', () => {
+      alert('Attach functionality: Open file attachment dialog');
+    });
+
+    btnDictate.addEventListener('click', () => {
+      alert('Dictation functionality: Start speech-to-text recording');
+    });
+
+    // Add message to timeline
+    function addMessageToTimeline(type, author, content, options = {}) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = `message ${type}`;
+      if (options.collapsed) messageDiv.classList.add('collapsed');
+
+      const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+      let headerHtml = '';
+      if (type === 'user') {
+        headerHtml = `
+          <div class="message-header">
+            <div class="message-avatar user">👤</div>
+            <span class="message-author user">${author}</span>
+            <span class="message-time">${time}</span>
+          </div>
+        `;
+      } else if (type === 'thought' || type === 'action') {
+        headerHtml = `
+          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="message-avatar agent">${options.icon || '🤖'}</div>
+            <span class="message-author agent">${author}</span>
+            <span class="message-time">${time}</span>
+            ${options.actionLabel ? `<span class="action-label">${options.actionLabel}</span>` : ''}
+            <span class="collapse-indicator">▸</span>
+          </div>
+        `;
+      } else {
+        headerHtml = `
+          <div class="message-header">
+            <div class="message-avatar agent">${options.icon || '🤖'}</div>
+            <span class="message-author agent">${author}</span>
+            <span class="message-time">${time}</span>
+            ${options.status ? `<span class="message-status">${options.status}</span>` : ''}
+          </div>
+        `;
+      }
+
+      let bodyHtml = '';
+      if (type === 'attachment') {
+        bodyHtml = `
+          <div class="message-body">
+            <div class="attachment-card">
+              <span class="attachment-icon">📄</span>
+              <span class="attachment-name">${content}</span>
+              <span class="attachment-size">${options.size || '0 KB'}</span>
+            </div>
+          </div>
+        `;
+      } else if (type === 'diff') {
+        bodyHtml = `
+          <div class="message-body">
+            <div class="diff-card">
+              <div class="diff-file">${options.file || 'file.txt'}</div>
+              <div class="diff-hunk">${content}</div>
+              <div class="diff-stats">${options.stats || '+0 / -0 lines'}</div>
+            </div>
+          </div>
+        `;
+      } else {
+        bodyHtml = `<div class="message-body"><p>${content}</p></div>`;
+      }
+
+      messageDiv.innerHTML = headerHtml + bodyHtml;
+      timeline.appendChild(messageDiv);
+      timeline.scrollTop = timeline.scrollHeight;
+    }
+
+    // Simulate AI response
+    function simulateAiResponse(userMessage) {
+      // Add AI thought (collapsed)
+      addMessageToTimeline('thought', 'Fennec', 'Analyzing your request and planning the approach...', {
+        collapsed: true,
+        icon: '🤖'
+      });
+
+      setTimeout(() => {
+        // Add action (collapsed)
+        addMessageToTimeline('action', 'Fennec', 'Searching the codebase for relevant files...', {
+          collapsed: true,
+          icon: '🔍',
+          actionLabel: 'search'
+        });
+
+        setTimeout(() => {
+          // Add result
+          addMessageToTimeline('result', 'Fennec', `I've analyzed "${userMessage}" and found several relevant files. The changes would involve updating the main module and its dependencies.`, {
+            status: 'Complete'
+          });
+
+          isAiWorking = false;
+          updateBackendStatus();
+
+          // If there was a queued task, process it
+          if (hasQueuedTask) {
+            hasQueuedTask = false;
+            updateTaskQueue();
+          }
+        }, 1500);
+      }, 1000);
+    }
+
+    // Update task queue visibility
+    function updateTaskQueue() {
+      if (hasQueuedTask && isAiWorking) {
+        taskQueue.hidden = false;
+      } else {
+        taskQueue.hidden = true;
+      }
+    }
+
+    // Update backend status indicator
+    function updateBackendStatus() {
+      const statusDot = document.querySelector('.status-dot');
+      const statusText = document.getElementById('backend-status');
+      if (isConnected) {
+        statusDot.setAttribute('data-state', 'online');
+        statusText.textContent = 'Connected';
+      } else {
+        statusDot.setAttribute('data-state', 'error');
+        statusText.textContent = 'Disconnected';
+      }
+    }
+
+    // Initialize
+    updateTaskQueue();
+    updateBackendStatus();
+
+    // Connect to backend (placeholder)
+    async function connectToBackend() {
+      try {
+        const response = await fetch(`${serverUrl}/health`);
+        if (response.ok) {
+          isConnected = true;
+          updateBackendStatus();
+        }
+      } catch (e) {
+        isConnected = false;
+        updateBackendStatus();
+      }
+    }
+
+    // Try to connect on load
+    connectToBackend();
+  </script>
 </body>
 </html>
