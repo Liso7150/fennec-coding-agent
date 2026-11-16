@@ -13,8 +13,7 @@
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
-  <link rel="stylesheet" href="./styles.css?v=4">
-  <script type="module" src="./updater.js?v=1"></script>
+  <link rel="stylesheet" href="./styles.css?v=5">
 </head>
 <body>
   <a class="skip-link" href="#composer-input">Skip to composer</a>
@@ -26,13 +25,13 @@
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
       </svg>
       <span class="brand-name">Fennec</span>
-      <span class="brand-subtitle">Liso7150 / ecosystem feature audit</span>
+      <span class="brand-subtitle">Liso7150 / fennec</span>
     </div>
     <div class="topbar-status">
       <span class="status-dot" data-state="online"></span>
-      <span class="status-text" id="backend-status">Audit recorded · 2026-11-16</span>
+      <span class="status-text" id="backend-status">Connected</span>
+      <button id="inspector-toggle" class="icon-button" type="button" aria-label="Toggle inspector">⊟</button>
       <button id="settings-button" class="icon-button" type="button" aria-label="Settings">⚙</button>
-      <button class="icon-button" type="button" aria-label="Collapse">⊟</button>
     </div>
   </header>
 
@@ -73,10 +72,18 @@
       <div class="tasks-section">
         <div class="section-header">
           <span class="section-label">RECENT TASKS</span>
-          <span class="task-count" id="task-count">3</span>
+          <span class="task-count" id="task-count">1</span>
         </div>
         <ul class="task-list" id="task-list" aria-label="Recent tasks">
-          <li class="task-empty">No tasks yet</li>
+          <li class="task-item active">
+            <div class="task-item-title">Backlog classification</div>
+            <div class="task-item-meta">
+              <span class="task-status-dot running"></span>
+              <span>Running</span>
+              <span>·</span>
+              <span>06:13</span>
+            </div>
+          </li>
         </ul>
       </div>
 
@@ -86,76 +93,119 @@
       </div>
     </aside>
 
-    <!-- Center panel: Timeline and composer -->
+    <!-- Center panel: Timeline, task queue, composer -->
     <main class="center-panel">
-      <!-- Breadcrumb header -->
-      <div class="center-breadcrumb">
-        <span>FEATURE AUDIT</span>
-        <span class="breadcrumb-sep">·</span>
-        <span>2026-11-16</span>
-        <span class="breadcrumb-sep">·</span>
-        <span>WORKING TREE</span>
-      </div>
-
-      <!-- Title section with coverage card -->
-      <div class="center-title-section">
-        <div class="title-content">
-          <h1 id="task-title">Fennec ecosystem implementation coverage</h1>
-          <p class="task-subtitle" id="task-subtitle">Evidence-led audit across engine, core, desktop, coding agent, finetune, and JetBrains integration.</p>
-        </div>
-        <div class="coverage-card">
-          <div class="coverage-label">OVERALL COVERAGE</div>
-          <div class="coverage-value">91%</div>
-          <div class="coverage-detail">462 / 509 confirmed</div>
-        </div>
-      </div>
-
-      <!-- Stat cards -->
-      <div class="stat-cards">
-        <div class="stat-card confirmed">
-          <div class="stat-label">CONFIRMED</div>
-          <div class="stat-value">462 <span class="stat-unit">operational features</span></div>
-        </div>
-        <div class="stat-card partial">
-          <div class="stat-label">PARTIAL</div>
-          <div class="stat-value">47 <span class="stat-unit">bounded follow-ups</span></div>
-        </div>
-        <div class="stat-card missing">
-          <div class="stat-label">MISSING</div>
-          <div class="stat-value">0 <span class="stat-unit">unsupported features</span></div>
-        </div>
-      </div>
-
-      <!-- Timeline -->
+      <!-- Timeline / Chat history -->
       <div class="timeline" id="timeline" role="log" aria-label="Task timeline" aria-live="polite">
-        <div class="timeline-empty" id="timeline-empty">
-          <p>No activity yet. Send a message to start a task.</p>
+
+        <!-- AI thought (collapsed by default) -->
+        <div class="message thought collapsed">
+          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="message-avatar agent">🤖</div>
+            <span class="message-author agent">Fennec</span>
+            <span class="message-time">06:13</span>
+            <span class="collapse-indicator">▸</span>
+          </div>
+          <div class="message-body">
+            <p>Analyzing the backlog of 47 partial features across 11 modules. Grouping by dependency order: engine decode optimizations unblock desktop streaming, which unblocks JetBrains sync.</p>
+          </div>
         </div>
+
+        <!-- Repository action (collapsed by default) -->
+        <div class="message action collapsed">
+          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="message-avatar agent">📂</div>
+            <span class="message-author agent">Fennec</span>
+            <span class="message-time">06:14</span>
+            <span class="action-label">git status</span>
+            <span class="collapse-indicator">▸</span>
+          </div>
+          <div class="message-body">
+            <pre>On branch main
+3 files changed, 142 insertions(+)
+src/sched.rs - NPU tier integration
+src/prefetch.rs - SSD prefetch module
+README.md - updated device matrix</pre>
+          </div>
+        </div>
+
+        <!-- Attachment (Markdown) -->
+        <div class="message attachment">
+          <div class="message-header">
+            <div class="message-avatar agent">📎</div>
+            <span class="message-author agent">Fennec</span>
+            <span class="message-time">06:15</span>
+          </div>
+          <div class="message-body">
+            <div class="attachment-card">
+              <span class="attachment-icon">📄</span>
+              <span class="attachment-name">FENNEC-FEATURE-AUDIT-2026-11-16.md</span>
+              <span class="attachment-size">34 KB</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- File diff (collapsed by default) -->
+        <div class="message diff collapsed">
+          <div class="message-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <div class="message-avatar agent">📝</div>
+            <span class="message-author agent">Fennec</span>
+            <span class="message-time">06:16</span>
+            <span class="action-label">reviewed diff</span>
+            <span class="collapse-indicator">▸</span>
+          </div>
+          <div class="message-body">
+            <div class="diff-card">
+              <div class="diff-file">src/sched.rs</div>
+              <div class="diff-hunk">
+                <span class="diff-add">+    Npu,     // NPU dedicated memory</span>
+                <span class="diff-add">+    Disk,    // SSD - slowest</span>
+                <span class="diff-context">     Host,    // CPU RAM - fallback</span>
+              </div>
+              <div class="diff-stats">+24 / -3 lines</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- User message -->
+        <div class="message user">
+          <div class="message-header">
+            <div class="message-avatar user">👤</div>
+            <span class="message-author user">Liso7150</span>
+            <span class="message-time">06:17</span>
+          </div>
+          <div class="message-body">
+            <p>Continue all abandoned work across all repos</p>
+          </div>
+        </div>
+
+        <!-- Result text -->
+        <div class="message result">
+          <div class="message-header">
+            <div class="message-avatar agent">🤖</div>
+            <span class="message-author agent">Fennec</span>
+            <span class="message-time">06:18</span>
+            <span class="message-status">Complete</span>
+          </div>
+          <div class="message-body">
+            <p>Committed uncommitted changes across 6 repos (fennec-core, fennec-cli, fennec-desktop, fennec-coding-agent, engine-bench, shell-bench). Engine tests running in background. OpenBot workspace cloned and ready for setup.</p>
+          </div>
+        </div>
+
       </div>
 
-      <!-- Task queue -->
+      <!-- Task queue (only visible when AI is working on previous task) -->
       <div class="task-queue" id="task-queue">
         <div class="task-queue-header">
           <span class="task-queue-icon">☰</span>
-          <span class="task-queue-title">Task queue</span>
-          <span class="task-queue-count">3 audit follow-ups</span>
-          <button class="task-queue-view-all" type="button">View all</button>
+          <span class="task-queue-title">Queued while running</span>
+          <span class="task-queue-count">1 task</span>
         </div>
         <ul class="task-queue-list" id="task-queue-list">
           <li class="task-queue-item">
             <span class="queue-dot"></span>
-            <span class="queue-title">Document native GitHub integration boundary beyond gh</span>
-            <span class="queue-status">Partial</span>
-          </li>
-          <li class="task-queue-item">
-            <span class="queue-dot"></span>
-            <span class="queue-title">Add push-to-talk, language selection, and long-response TTS summaries</span>
-            <span class="queue-status">Partial</span>
-          </li>
-          <li class="task-queue-item">
-            <span class="queue-dot"></span>
-            <span class="queue-title">Improve finetune estimates and sensitive-data scanning</span>
-            <span class="queue-status">Partial</span>
+            <span class="queue-title">Continue all abandoned work across all repos</span>
+            <span class="queue-status">Queued</span>
           </li>
         </ul>
       </div>
@@ -165,9 +215,9 @@
         <textarea id="composer-input" rows="2" placeholder="Ask Fennec to inspect, edit, test, or explain your code" maxlength="32000"></textarea>
         <div class="composer-toolbar">
           <div class="composer-tools">
-            <button class="tool-button" type="button" aria-label="Add">+</button>
-            <button class="tool-button" type="button" aria-label="Attach">📎</button>
-            <button class="tool-button" type="button" aria-label="Dictate">🎤</button>
+            <button class="tool-button" type="button" aria-label="Add" id="btn-add">+</button>
+            <button class="tool-button" type="button" aria-label="Attach" id="btn-attach">📎</button>
+            <button class="tool-button" type="button" aria-label="Dictate" id="btn-dictate">🎤</button>
             <span class="composer-hint">Dictation available</span>
           </div>
           <button class="send-button" id="send-button" type="button" disabled>
@@ -177,121 +227,126 @@
       </div>
     </main>
 
-    <!-- Right panel: Inspector -->
-    <aside class="right-panel" aria-label="Inspector">
+    <!-- Right panel: Context Inspector -->
+    <aside class="right-panel" id="right-panel" aria-label="Context Inspector">
       <div class="inspector-header">
         <div>
-          <div class="inspector-title">Audit context</div>
-          <div class="inspector-subtitle">Implementation evidence</div>
+          <div class="inspector-title">Context</div>
+          <div class="inspector-subtitle">Workspace state</div>
         </div>
-        <button class="icon-button" type="button" aria-label="Collapse inspector">⊟</button>
+        <button class="icon-button" type="button" aria-label="Collapse inspector" id="inspector-collapse">⊟</button>
       </div>
 
-      <!-- Audit Metadata -->
+      <!-- Active Agents -->
       <div class="inspector-section">
         <div class="inspector-section-header">
-          <span>AUDIT METADATA</span>
-          <span class="section-status complete">Complete</span>
+          <span>ACTIVE AGENTS</span>
+          <span class="section-count">3 tracked</span>
         </div>
-        <div class="metadata-grid">
-          <div class="metadata-row">
-            <span class="metadata-key">Version</span>
-            <span class="metadata-value">2.0.0 working tree</span>
+        <div class="agent-item">
+          <div class="agent-icon">🤖</div>
+          <div class="agent-info">
+            <div class="agent-name">Fennec</div>
+            <div class="agent-task">Backlog classification</div>
+            <div class="agent-status running">Running · 06:13</div>
           </div>
-          <div class="metadata-row">
-            <span class="metadata-key">Scope</span>
-            <span class="metadata-value">11 module areas</span>
+        </div>
+        <div class="agent-note muted">
+          Jev and OpenBot remain capability-gated until outlet API, credentials, and lifecycle checks pass.
+        </div>
+      </div>
+
+      <!-- Workspace Context -->
+      <div class="inspector-section">
+        <div class="inspector-section-header">
+          <span>WORKSPACE CONTEXT</span>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">⚡</span>
+          <div class="context-info">
+            <div class="context-label">Subagents</div>
+            <div class="context-value muted">2 outlets pending verification</div>
           </div>
-          <div class="metadata-row">
-            <span class="metadata-key">Evidence</span>
-            <span class="metadata-value">repository paths</span>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">📡</span>
+          <div class="context-info">
+            <div class="context-label">Processes</div>
+            <div class="context-value ok">ACP audit stream connected</div>
+          </div>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">🔧</span>
+          <div class="context-info">
+            <div class="context-label">Skills</div>
+            <div class="context-value muted">Release, repo, benchmark audit</div>
+          </div>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">📦</span>
+          <div class="context-info">
+            <div class="context-label">Artifacts</div>
+            <div class="context-value muted">Results graphs and release evidence</div>
+          </div>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">🌐</span>
+          <div class="context-info">
+            <div class="context-label">Web Readings</div>
+            <div class="context-value muted">Backend and runtime evidence</div>
+          </div>
+        </div>
+        <div class="context-item">
+          <span class="context-icon">🔗</span>
+          <div class="context-info">
+            <div class="context-label">Sources</div>
+            <div class="context-value muted">9 repos · docs · test matrices</div>
           </div>
         </div>
       </div>
 
-      <!-- Module Status -->
+      <!-- Release & Verification -->
       <div class="inspector-section">
-        <div class="inspector-section-label">MODULE STATUS</div>
-        <div class="module-list">
-          <div class="module-row">
-            <span class="module-name">engine</span>
-            <span class="module-count">38 / 42</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">core</span>
-            <span class="module-count">72 / 78</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">desktop</span>
-            <span class="module-count">87 / 95</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">coding-agent</span>
-            <span class="module-count">62 / 68</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">Jev + OpenBot</span>
-            <span class="module-count">20 / 23</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">Git / GitHub</span>
-            <span class="module-count">35 / 45</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">vision / voice</span>
-            <span class="module-count">27 / 34</span>
-          </div>
-          <div class="module-row">
-            <span class="module-name">finetune + IDE</span>
-            <span class="module-count">69 / 72</span>
-          </div>
+        <div class="inspector-section-header">
+          <span>RELEASE & VERIFICATION</span>
+        </div>
+        <div class="release-row">
+          <span class="release-version">1.9.0</span>
+          <span class="release-status warn">reconcile & verify</span>
+        </div>
+        <div class="release-row">
+          <span class="release-version">2.0.0</span>
+          <span class="release-status ok">version/test gate</span>
+        </div>
+        <div class="release-row">
+          <span class="release-version">2.5.0</span>
+          <span class="release-status muted">held by user</span>
+        </div>
+        <div class="release-row">
+          <span class="release-version">Matrix</span>
+          <span class="release-status warn">cross-repo pending</span>
         </div>
       </div>
 
-      <!-- Partial Watchlist -->
+      <!-- Environment -->
       <div class="inspector-section">
-        <div class="inspector-section-label">PARTIAL WATCHLIST</div>
-        <div class="watchlist-item">
-          <span class="watchlist-icon">🔗</span>
-          <div class="watchlist-content">
-            <div class="watchlist-title">GitHub depth</div>
-            <div class="watchlist-desc">PR state relies on gh; native data model remains bounded.</div>
-          </div>
+        <div class="inspector-section-header">
+          <span>ENVIRONMENT</span>
         </div>
-        <div class="watchlist-item">
-          <span class="watchlist-icon">🎤</span>
-          <div class="watchlist-content">
-            <div class="watchlist-title">Voice controls</div>
-            <div class="watchlist-desc">STT is operational; push-to-talk and language selection are incomplete.</div>
-          </div>
+        <div class="env-row">
+          <span class="env-key">Repository</span>
+          <span class="env-value">fennec</span>
         </div>
-        <div class="watchlist-item">
-          <span class="watchlist-icon">📊</span>
-          <div class="watchlist-content">
-            <div class="watchlist-title">Finetune estimates</div>
-            <div class="watchlist-desc">Job control works; time, storage, and sensitive-data safeguards need refinement.</div>
-          </div>
+        <div class="env-row">
+          <span class="env-key">Branch</span>
+          <span class="env-value">main</span>
+        </div>
+        <div class="env-row">
+          <span class="env-key">Backend</span>
+          <span class="env-value ok">Connected</span>
         </div>
       </div>
 
-      <!-- Verification Context -->
-      <div class="inspector-section">
-        <div class="inspector-section-label">VERIFICATION CONTEXT</div>
-        <div class="verification-list">
-          <div class="verification-item">
-            <span class="check-icon">✓</span>
-            <span>ACP v1 and streaming event envelope</span>
-          </div>
-          <div class="verification-item">
-            <span class="check-icon">✓</span>
-            <span>Approval route and outlet status</span>
-          </div>
-          <div class="verification-item">
-            <span class="check-icon">✓</span>
-            <span>Desktop and JetBrains sync</span>
-          </div>
-        </div>
-      </div>
     </aside>
 
   </div>

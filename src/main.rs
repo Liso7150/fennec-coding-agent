@@ -90,8 +90,8 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn serve_index() -> impl IntoResponse {
-    app::render_audit_dashboard()
+async fn serve_index() -> Html<&'static str> {
+    Html(include_str!("../web/index.html"))
 }
 
 async fn health_check() -> Json<HealthResponse> {
