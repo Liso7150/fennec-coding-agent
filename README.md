@@ -1,119 +1,189 @@
 # Fennec Coding Agent
 
-Web-based coding agent interface for the Fennec suite. This repository contains the HTML/CSS templates; all logic is provided by **fennec-desktop** (native Rust application).
+Rust web backend for the Fennec coding agent orchestration layer. Provides task lifecycle management, agent routing, repository operations, and real-time event streaming via SSE/WebSocket.
 
 ## Architecture
 
 ```
-Browser ←→ fennec-desktop (Rust backend + web server)
-                ↓
-           fennec-core (agent server)
-                ↓
-           Fennec engine (inference)
+Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
+                                ↓
+                           fennec-core (agent server)
+                                ↓
+                           Fennec engine (inference)
 ```
 
 **fennec-coding-agent** (this repo):
-- HTML/CSS templates for the web interface
-- PWA manifest and icons
-- No JavaScript — all logic is in fennec-desktop
+- Rust/Axum web backend service
+- Task orchestration and lifecycle management
+- Agent delegation (Fennec, JEV, OpenBot)
+- Repository operations and Git workflow
+- Real-time event streaming (SSE + WebSocket)
+- Serves web interface on `http://127.0.0.1:8787`
 
 **fennec-desktop**:
-- Native Rust application (egui/eframe)
-- Serves the web interface on `http://localhost:8787`
-- Provides all API endpoints and real-time updates
-- Talks to fennec-core and Fennec engine backends
+- Native Rust desktop application (egui/eframe)
+- Primary developer workspace UI
+- Connects to this backend for agent operations
 
-## Usage
-
-### 1. Build fennec-desktop
-
-```bash
-git clone https://github.com/Liso7150/fennec-desktop
-cd fennec-desktop
-cargo build --release --offline
-```
-
-### 2. Start the backend services
-
-```bash
-# Start the Fennec engine
-fennec serve --model qwen36-35b --gpu --auto-tier
-
-# Start the agent server
-fennec-agent serve --host 127.0.0.1 --port 8787
-```
-
-### 3. Access the web interface
-
-Open `http://localhost:8787` in your browser.
-
-The fennec-desktop binary serves the web interface from this repository's `web/` directory and handles all API requests.
+**fennec-cli**:
+- Command-line interface
+- Console access to backend operations
 
 ## Features
 
-- **Chat and Agent modes** — plain conversation, or a bounded tool loop with file operations
-- **Read-only by default** — explicit approval required for writes and shell commands
-- **Engine on demand** — starts the engine automatically when needed
-- **Local-only data** — all data stays on your device
-- **File browser** — view and preview workspace files
-- **Reasoning display** — control and view model reasoning
-- **Vision support** — attach images for vision-capable models
-- **PWA installable** — works as a progressive web app
+### Task Management
+- Create, start, stop, and resume coding tasks
+- Task planning with step-by-step progress tracking
+- Message history and conversation threads
+- Artifact tracking (files changed, diffs, reports)
+- Approval workflow for destructive operations
+
+### Agent Orchestration
+- **Fennec** — primary coding agent
+- **JEV** — specialized delegation for repository migration and architecture analysis
+- **OpenBot** — code review, test generation, documentation automation
+- Unified timeline showing all agent activity
+- Delegation with structured results and follow-up recommendations
+
+### Repository Operations
+- Git status, fetch, pull, commit, push (all with explicit confirmation)
+- Branch management and sync status tracking
+- Pull request awareness and creation
+- Working tree change detection
+- Conflict state reporting
+
+### Real-time Events
+- Server-sent events (SSE) for one-way streaming
+- WebSocket for bidirectional communication
+- Event envelope with task/agent/repository context
+- Structured payloads for tool execution, approvals, and status changes
+
+### Safety and Permissions
+- Read-only by default
+- Explicit approval required for file writes, shell commands, Git operations
+- Risk-level classification (Low/Medium/High/Critical)
+- Affected files listed in approval requests
+- No auto-commit, auto-push, or force operations
+
+## Build and Run
+
+```bash
+cargo build --release --offline
+./target/release/fennec-agent
+```
+
+The backend starts on `127.0.0.1:8787` by default.
+
+## API Endpoints
+
+### Tasks
+- `GET /api/tasks` — list all tasks
+- `POST /api/tasks` — create new task
+- `GET /api/tasks/:id` — get task details
+- `DELETE /api/tasks/:id` — delete task
+- `POST /api/tasks/:id/start` — start task execution
+- `POST /api/tasks/:id/stop` — stop/cancel task
+- `POST /api/tasks/:id/messages` — send message to task
+
+### Agents
+- `GET /api/agents` — list available agents
+- `POST /api/agents/:id/delegate` — delegate work to agent
+
+### Repositories
+- `GET /api/repositories` — list registered repositories
+- `POST /api/repositories` — register new repository
+- `GET /api/repositories/:id` — get repository details
+- `GET /api/repositories/:id/status` — get Git status
+
+### Events
+- `GET /api/events` — SSE event stream
+- `GET /api/events/ws` — WebSocket event stream
+
+### Web Interface
+- `GET /` — serves web/index.html
+- `GET /web/*` — static web assets (HTML, CSS, icons)
+
+## Event Types
+
+- `TaskCreated`, `TaskSelected`, `TaskStatusChanged`
+- `MessageCreated`, `MessageStreamed`
+- `PlanUpdated`
+- `ToolStarted`, `ToolProgressUpdated`, `ToolCompleted`, `ToolFailed`
+- `ArtifactCreated`, `ArtifactUpdated`
+- `AgentDelegated`, `AgentStatusChanged`
+- `ApprovalRequested`
+- `GitStatusChanged`, `GitOperationProgress`
+- `VoiceStateChanged`, `VisionAnalysisCompleted`
+- `FineTuneJobProgress`
+- `BackendDisconnected`, `BackendReconnected`
 
 ## Development
 
-### Web Interface (this repo)
+### Dependencies
+- Rust 1.85+ (edition 2024)
+- Axum 0.7 (web framework)
+- Tokio (async runtime)
+- tower-http (CORS, static files, tracing)
+- fennec-client (path dependency to fennec-core)
+- fennec-economy (path dependency for context compaction)
 
-Edit the HTML/CSS in `web/`:
-- `index.html` — main interface structure
-- `styles.css` — visual styling (Fennec Night theme)
-- `manifest.webmanifest` — PWA configuration
-- `icons/` — app icons for various platforms
-
-### Backend Logic (fennec-desktop)
-
-All JavaScript logic has been ported to Rust in fennec-desktop:
-- API client communication
-- Real-time event handling
-- State management
-- UI interactions
-
-The web interface uses server-sent events (SSE) for real-time updates from the Rust backend.
-
-## Migration from JavaScript PWA
-
-The previous version used JavaScript (app.js, helpers.js, etc.) for all client-side logic. This has been replaced with:
-
-1. **No client-side JavaScript** — the browser just renders HTML/CSS
-2. **Rust backend** — fennec-desktop handles all logic
-3. **SSE for updates** — real-time data pushed from server to browser
-4. **Form submissions** — user actions sent as HTTP requests
-
-This architecture is:
-- **Faster** — no JavaScript parsing/execution in the browser
-- **More secure** — logic is in compiled Rust, not client-side JS
-- **Easier to maintain** — one codebase (Rust) instead of two (JS + Rust)
-- **Better performance** — server does the heavy lifting
-
-## Platform Support
-
-The web interface works in any modern browser:
-- Chrome/Edge (Chromium)
-- Firefox
-- Safari
-- Mobile browsers (iOS Safari, Android Chrome)
-
-PWA installation is supported on mobile and desktop browsers.
-
-## Testing
-
-Web interface tests are now in fennec-desktop:
-
+### Testing
 ```bash
-cd fennec-desktop
 cargo test --release --offline
 ```
 
+### Project Structure
+```
+src/
+  main.rs          — Axum server, routes, handlers
+  api.rs           — API response types and error handling
+  task.rs          — Task domain models
+  agent.rs         — Agent identity, capabilities, delegation
+  repository.rs    — Repository and Git state models
+  events.rs        — Event envelope and stream types
+web/
+  index.html       — Web interface
+  styles.css       — Fennec Night theme
+  manifest.webmanifest — PWA configuration
+  icons/           — App icons
+```
+
+## Integration
+
+### With fennec-desktop
+The desktop app connects to this backend via HTTP/SSE:
+```rust
+let client = reqwest::Client::new();
+let tasks = client.get("http://127.0.0.1:8787/api/tasks").send().await?;
+```
+
+### With fennec-core
+Uses fennec-client crate for agent server communication:
+```rust
+use fennec_client::AgentServerClient;
+let client = AgentServerClient::new("http://127.0.0.1:8787");
+```
+
+### With Fennec engine
+Engine inference via fennec-core's engine SSE client:
+```rust
+use fennec_client::EngineSseClient;
+let engine = EngineSseClient::new("http://127.0.0.1:8184");
+```
+
+## Security
+
+- Loopback-only (127.0.0.1)
+- No external network access
+- No authentication required (local-only)
+- No secrets read, written, or displayed
+- All destructive operations require explicit approval
+- Git operations never auto-execute
+
 ## Credits
 
-Engine base idea: [JustVugg/colibri](https://github.com/JustVugg/colibri) — device-tiered MoE inference. Fine-tuning: [AirLLM](https://github.com/lyogavin/airllm). Part of the [Fennec suite](https://github.com/Liso7150/fennec-environment-setup).
+Engine: [Liso7150/fennec](https://github.com/Liso7150/fennec). Base idea: [JustVugg/colibri](https://github.com/JustVugg/colibri). Agent server: [Liso7150/fennec-core](https://github.com/Liso7150/fennec-core). Part of the [Fennec suite](https://github.com/Liso7150/fennec-environment-setup).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

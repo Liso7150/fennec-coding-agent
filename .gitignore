@@ -9,6 +9,8 @@ release/
 .DS_Store
 *.egg-info/
 .pytest_cache/
+target/
+Cargo.lock
 
 # Auto-update artifacts
 *.old

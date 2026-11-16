@@ -1,0 +1,37 @@
+[package]
+name = "fennec-coding-agent"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Liso7150/fennec-coding-agent"
+description = "Fennec coding agent: Rust web backend for task orchestration, agent routing, repository operations, and event streaming."
+
+[[bin]]
+name = "fennec-agent"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-stream = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+fennec-client = { path = "../fennec-core/src/fennec-client" }
+fennec-economy = { path = "../fennec-economy" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
