@@ -1,58 +1,119 @@
 # Fennec Coding Agent
 
-Installable, chat-first coding workspace for the Fennec engine, whose base idea is
-[Colibri](https://github.com/JustVugg/colibri). The browser app (`web/`)
-talks to the shared local core
-([`fennec-core`](https://github.com/Liso7150/fennec-core)), which starts the
-local engine only when you send a message.
+Web-based coding agent interface for the Fennec suite. This repository contains the HTML/CSS templates; all logic is provided by **fennec-desktop** (native Rust application).
+
+## Architecture
+
+```
+Browser ←→ fennec-desktop (Rust backend + web server)
+                ↓
+           fennec-core (agent server)
+                ↓
+           Fennec engine (inference)
+```
+
+**fennec-coding-agent** (this repo):
+- HTML/CSS templates for the web interface
+- PWA manifest and icons
+- No JavaScript — all logic is in fennec-desktop
+
+**fennec-desktop**:
+- Native Rust application (egui/eframe)
+- Serves the web interface on `http://localhost:8787`
+- Provides all API endpoints and real-time updates
+- Talks to fennec-core and Fennec engine backends
+
+## Usage
+
+### 1. Build fennec-desktop
+
+```bash
+git clone https://github.com/Liso7150/fennec-desktop
+cd fennec-desktop
+cargo build --release --offline
+```
+
+### 2. Start the backend services
+
+```bash
+# Start the Fennec engine
+fennec serve --model qwen36-35b --gpu --auto-tier
+
+# Start the agent server
+fennec-agent serve --host 127.0.0.1 --port 8787
+```
+
+### 3. Access the web interface
+
+Open `http://localhost:8787` in your browser.
+
+The fennec-desktop binary serves the web interface from this repository's `web/` directory and handles all API requests.
 
 ## Features
 
-- **Chat and Agent modes** — plain conversation, or a bounded tool loop that
-  reads files, greps, edits and runs commands inside a configured workspace.
-- **Read-only by default** — each agent run needs your explicit approval for
-  writes or shell commands; every tool result stays visible.
-- **Engine on demand** — if the engine is offline, the first message asks the
-  core to start it on this device; nothing listens in the background.
-- **Installable PWA** — Works in desktop browsers, Android Chrome ("Add to Home
-  screen") and iOS Safari; the same UI works on a phone running the core in
-  Termux or reaching a trusted host.
-- **Local-only data** — conversations stay in the tab, files stay in the
-  workspace, and nothing is uploaded by the app.
-- **Server files view** — browse and preview the core's workspace from the app.
-- **Reasoning control and display** — choose the server default, off, or high
-  reasoning effort; streamed reasoning appears in a collapsible block.
-- **Vision and attachments** — attach one PNG/JPEG/WebP/GIF (or paste it) for
-  the engine's vision tower, and up to three text files as bounded context.
-- **Speech** — dictate through the local faster-whisper sidecar
-  (`POST /api/stt`) and read answers aloud with the browser's offline voices.
+- **Chat and Agent modes** — plain conversation, or a bounded tool loop with file operations
+- **Read-only by default** — explicit approval required for writes and shell commands
+- **Engine on demand** — starts the engine automatically when needed
+- **Local-only data** — all data stays on your device
+- **File browser** — view and preview workspace files
+- **Reasoning display** — control and view model reasoning
+- **Vision support** — attach images for vision-capable models
+- **PWA installable** — works as a progressive web app
 
-## Run
+## Development
 
-Install the core (editable) and start its server, which also serves this PWA:
+### Web Interface (this repo)
+
+Edit the HTML/CSS in `web/`:
+- `index.html` — main interface structure
+- `styles.css` — visual styling (Fennec Night theme)
+- `manifest.webmanifest` — PWA configuration
+- `icons/` — app icons for various platforms
+
+### Backend Logic (fennec-desktop)
+
+All JavaScript logic has been ported to Rust in fennec-desktop:
+- API client communication
+- Real-time event handling
+- State management
+- UI interactions
+
+The web interface uses server-sent events (SSE) for real-time updates from the Rust backend.
+
+## Migration from JavaScript PWA
+
+The previous version used JavaScript (app.js, helpers.js, etc.) for all client-side logic. This has been replaced with:
+
+1. **No client-side JavaScript** — the browser just renders HTML/CSS
+2. **Rust backend** — fennec-desktop handles all logic
+3. **SSE for updates** — real-time data pushed from server to browser
+4. **Form submissions** — user actions sent as HTTP requests
+
+This architecture is:
+- **Faster** — no JavaScript parsing/execution in the browser
+- **More secure** — logic is in compiled Rust, not client-side JS
+- **Easier to maintain** — one codebase (Rust) instead of two (JS + Rust)
+- **Better performance** — server does the heavy lifting
+
+## Platform Support
+
+The web interface works in any modern browser:
+- Chrome/Edge (Chromium)
+- Firefox
+- Safari
+- Mobile browsers (iOS Safari, Android Chrome)
+
+PWA installation is supported on mobile and desktop browsers.
+
+## Testing
+
+Web interface tests are now in fennec-desktop:
 
 ```bash
-python -m pip install -e fennec-core
-fennec-agent serve --host 127.0.0.1 --port 8787
-# open http://127.0.0.1:8787
-```
-
-The core reads `~/.fennec/config.json` (or `FENNEC_CONFIG` / `FENNEC_*`
-variables) for the engine URL, model and workspace. A non-loopback bind requires
-`FENNEC_APP_TOKEN` and TLS in front of the core; plain LAN HTTP is refused.
-
-Android: see [`fennec-installer/android`](https://github.com/Liso7150/fennec-installer/tree/main/android)
-for the Termux path (core + PWA on the phone) and the WebView scaffold.
-
-## Tests
-
-```bash
-node --test web/tests/
+cd fennec-desktop
+cargo test --release --offline
 ```
 
 ## Credits
 
-Engine base idea: [JustVugg/colibri](https://github.com/JustVugg/colibri) —
-device-tiered MoE inference. Fine-tuning:
-[AirLLM](https://github.com/lyogavin/airllm). Part of the
-[Fennec suite](https://github.com/Liso7150/fennec-environment-setup).
+Engine base idea: [JustVugg/colibri](https://github.com/JustVugg/colibri) — device-tiered MoE inference. Fine-tuning: [AirLLM](https://github.com/lyogavin/airllm). Part of the [Fennec suite](https://github.com/Liso7150/fennec-environment-setup).
