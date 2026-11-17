@@ -23,6 +23,7 @@ mod agent;
 mod repository;
 mod events;
 mod updater;
+mod ag_ui;
 
 use task::{Task, TaskStatus, TaskId};
 use agent::{Agent, AgentIdentity, AgentStatus};
@@ -30,7 +31,7 @@ use repository::{Repository, RepositoryId};
 use events::{EventEnvelope, EventType};
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     tasks: Arc<RwLock<Vec<Task>>>,
     agents: Arc<RwLock<Vec<Agent>>>,
     repositories: Arc<RwLock<Vec<Repository>>>,
@@ -108,6 +109,7 @@ async fn main() {
         .route("/api/repositories/:id/status", get(repository_status))
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
+        .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
         .fallback_service(ServeDir::new("web").fallback(get(serve_index)))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
