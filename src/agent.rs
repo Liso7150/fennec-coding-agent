@@ -47,6 +47,13 @@ pub enum AgentCapability {
     GenerateArtifact,
     VerifyImplementation,
     DelegateTask,
+    // Browser automation capabilities (OpenCode Browse integration)
+    BrowserNavigate,
+    BrowserClick,
+    BrowserType,
+    BrowserScreenshot,
+    BrowserExtractText,
+    BrowserExecuteScript,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

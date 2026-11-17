@@ -959,16 +959,16 @@ impl App {
                 .child(div().flex().items_center().gap_2()
                     .child(Label::new("Task queue").font_weight(FontWeight::SEMIBOLD))
                     .child(Label::new(format!("{} items", self.queued.len())).text_size(px(12.0)).text_color(t.muted_foreground)))
-                .child(Button::new("clearq").label("Clear").ghost().small()
+                .child(Button::new("clearq").label("View all").ghost().small()
                     .on_click(cx.listener(|a, _, _, cx| { a.clear_queue(); cx.notify(); }))))
             .child(div().flex().flex_col()
                 .children(queued.into_iter().map(|(idx, q)| {
+                    let status = if idx == 0 { "Next" } else { "Queued" };
                     div().id(ElementId::NamedInteger("queue-item".into(), idx as u64)).flex().items_center().justify_between().py_1()
                         .child(div().flex().items_center().gap_2()
-                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(t.yellow))
+                            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(t.green))
                             .child(Label::new(q).text_size(px(13.0)).truncate()))
-                        .child(Button::new(ElementId::NamedInteger("rm".into(), idx as u64)).label("×").ghost().xsmall()
-                            .on_click(cx.listener(move |a, _, _, cx| { a.remove_from_queue(idx); cx.notify(); })))
+                        .child(Label::new(status).text_size(px(12.0)).text_color(t.muted_foreground))
                 })))
     }
 
@@ -978,7 +978,9 @@ impl App {
         div().border_t_1().border_color(t.border).bg(t.background).px_5().py_3().flex().flex_col().gap_2()
             // gpui-base inputs all render element id "input-state"; this id-bearing
             // parent keeps their a11y node ids distinct when a UIA client connects.
-        .child(div().id("composer-dock").rounded_md().border_1().border_color(t.border).p_3().child(Input::new(&self.composer)))
+        .child(div().id("composer-dock").rounded_md().border_1().border_color(t.border).p_3()
+            .child(Label::new("Ask Fennec to inspect, edit, test, or explain your code").text_size(px(13.0)).text_color(t.muted_foreground))
+            .child(div().mt_2().child(Input::new(&self.composer))))
             .child(div().flex().items_center().justify_between()
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("add").label("+").ghost().small()
@@ -990,7 +992,7 @@ impl App {
                             window.push_notification(Notification::info("Dictation needs audio capture, which is not wired up in this build. Type or paste text instead."), cx);
                         })))
                     .child(Label::new("Hold to dictate").text_size(px(12.0)).text_color(t.muted_foreground)))
-                .child(Button::new("send").label("Send").primary()
+                .child(Button::new("send").label("↑").primary()
                     .when(!send_enabled, |b| b.disabled(true))
                     .on_click(cx.listener(|a, _, window, cx| { a.send(window, cx); }))))
     }

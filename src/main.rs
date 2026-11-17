@@ -18,6 +18,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 mod task;
+mod browser;
 mod agent;
 mod repository;
 mod events;
