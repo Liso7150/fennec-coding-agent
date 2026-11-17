@@ -703,6 +703,70 @@
     savedPermBtn.classList.add('active');
   }
 
+  // Workspace management
+  let workspaces = JSON.parse(localStorage.getItem('fennec-workspaces') || '[]');
+  let activeWorkspaceId = localStorage.getItem('fennec-active-workspace') || null;
+
+  if (workspaces.length === 0) {
+    workspaces = [{ id: 'default', name: 'Default', icon: '📁', color: '#15120F' }];
+    activeWorkspaceId = 'default';
+    saveWorkspaces();
+  }
+
+  function saveWorkspaces() {
+    localStorage.setItem('fennec-workspaces', JSON.stringify(workspaces));
+    localStorage.setItem('fennec-active-workspace', activeWorkspaceId || '');
+    renderWorkspaces();
+  }
+
+  function renderWorkspaces() {
+    const list = document.getElementById('workspace-list');
+    if (!list) return;
+    list.innerHTML = '';
+    workspaces.forEach((ws) => {
+      const li = document.createElement('li');
+      li.className = 'workspace-item' + (ws.id === activeWorkspaceId ? ' active' : '');
+      li.innerHTML = `
+        <span class="workspace-icon">${ws.icon || '📁'}</span>
+        <span class="workspace-name">${escapeHtml(ws.name)}</span>
+        <button class="workspace-delete" data-id="${ws.id}" type="button" aria-label="Delete workspace">×</button>
+      `;
+      li.addEventListener('click', (e) => {
+        if (e.target.classList.contains('workspace-delete')) return;
+        activeWorkspaceId = ws.id;
+        saveWorkspaces();
+      });
+      list.appendChild(li);
+    });
+
+    list.querySelectorAll('.workspace-delete').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if (workspaces.length <= 1) return;
+        workspaces = workspaces.filter((w) => w.id !== id);
+        if (activeWorkspaceId === id) {
+          activeWorkspaceId = workspaces[0]?.id || null;
+        }
+        saveWorkspaces();
+      });
+    });
+  }
+
+  const btnAddWorkspace = document.getElementById('btn-add-workspace');
+  if (btnAddWorkspace) {
+    btnAddWorkspace.addEventListener('click', () => {
+      const name = prompt('Workspace name:');
+      if (!name || !name.trim()) return;
+      const id = 'ws-' + Date.now();
+      workspaces.push({ id, name: name.trim(), icon: '📁', color: '#15120F' });
+      activeWorkspaceId = id;
+      saveWorkspaces();
+    });
+  }
+
+  renderWorkspaces();
+
   // Initial render
   renderAll();
   checkHealth();
