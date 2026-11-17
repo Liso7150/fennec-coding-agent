@@ -158,9 +158,36 @@ impl App {
                 self.queued = h.queued;
                 self.tasks = h.tasks;
                 self.active = h.active;
-                let max_task = self.tasks.iter().map(|t| t.id).max().unwrap_or(0);
-                let max_msg = self.tasks.iter().flat_map(|t| t.msgs.iter().map(|m| m.id)).max().unwrap_or(0);
-                self.next_id = max_task.max(max_msg) + 1;
+                // Files written before ids were seeded correctly can hold
+                // duplicates; identical ids render as identical a11y node ids
+                // (panic in debug builds) and toggle(id) would hit every row.
+                let mut next = self
+                    .tasks
+                    .iter()
+                    .map(|t| t.id)
+                    .chain(self.tasks.iter().flat_map(|t| t.msgs.iter().map(|m| m.id)))
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let mut seen_tasks = std::collections::HashSet::new();
+                let mut seen_msgs = std::collections::HashSet::new();
+                for t in self.tasks.iter_mut() {
+                    let old = t.id;
+                    if !seen_tasks.insert(old) {
+                        t.id = next;
+                        next += 1;
+                        if self.active == Some(old) {
+                            self.active = Some(t.id);
+                        }
+                    }
+                    for m in t.msgs.iter_mut() {
+                        if !seen_msgs.insert(m.id) {
+                            m.id = next;
+                            next += 1;
+                        }
+                    }
+                }
+                self.next_id = next;
             }
         }
         if let Some(t) = self.task_mut() {
@@ -289,8 +316,18 @@ impl App {
                 BackendResponse::Complete { task_id, status, final_text } => {
                     let (think, content) = (self.pending_think, self.pending_content);
                     if let Some((tid, mid)) = think {
-                        if let Some(t) = self.tasks.iter_mut().find(|t| t.id == tid) {
-                            t.msgs.retain(|m| m.id != mid);
+                        if status == "Failed" && content.is_none() && final_text.is_empty() {
+                            // A failed send with nothing streamed keeps an error
+                            // row in the timeline instead of vanishing.
+                            self.finish_think("The engine did not respond to this task.");
+                        } else {
+                            // Thoughts stay in the timeline after completion; drop
+                            // the row only when no thought text ever streamed in.
+                            if let Some(t) = self.tasks.iter_mut().find(|t| t.id == tid) {
+                                if t.msgs.iter().any(|m| m.id == mid && m.content == "Thinking…") {
+                                    t.msgs.retain(|m| m.id != mid);
+                                }
+                            }
                         }
                     }
                     match content {
@@ -727,7 +764,7 @@ impl App {
                     .on_click(cx.listener(|a, _, _, cx| { a.search_open = !a.search_open; cx.notify(); }))))
             .children(self.search_open.then(|| {
                 let t = t.clone();
-                div().child(Input::new(&self.search).h(px(28.0)).text_size(px(12.0)))
+                div().id("search-dock").child(Input::new(&self.search).h(px(28.0)).text_size(px(12.0)))
                     .child(Label::new(if query.is_empty() { String::new() } else { format!("{} tasks", tasks.len()) }).text_size(px(10.0)).text_color(t.muted_foreground))
             }))
             .child(div().flex().flex_col().gap_1().overflow_y_scrollbar()
@@ -939,7 +976,9 @@ impl App {
         let t = cx.theme().clone();
         let send_enabled = !self.composer.read(cx).value().trim().is_empty();
         div().border_t_1().border_color(t.border).bg(t.background).px_5().py_3().flex().flex_col().gap_2()
-            .child(div().rounded_md().border_1().border_color(t.border).p_3().child(Input::new(&self.composer)))
+            // gpui-base inputs all render element id "input-state"; this id-bearing
+            // parent keeps their a11y node ids distinct when a UIA client connects.
+        .child(div().id("composer-dock").rounded_md().border_1().border_color(t.border).p_3().child(Input::new(&self.composer)))
             .child(div().flex().items_center().justify_between()
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("add").label("+").ghost().small()
@@ -986,7 +1025,7 @@ impl App {
                     move |content, _, cx| {
                         content
                             .child(Label::new("Server URL").font_weight(FontWeight::MEDIUM))
-                            .child(div().mt_1().child(Input::new(&url_input)))
+                            .child(div().id("settings-url-dock").mt_1().child(Input::new(&url_input)))
                             .child(Label::new("Backend for tasks, streaming events and agents. Default: http://127.0.0.1:8787").text_size(px(11.0)).text_color(cx.theme().muted_foreground).mt_1())
                     }
                 })
