@@ -110,12 +110,60 @@ pub enum MessageRole {
     Verification,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub enum MessageContent {
     Text(String),
     Code(CodeBlock),
     Reasoning(ReasoningSummary),
     Mixed(Vec<MessageContent>),
+}
+
+// Text is a plain JSON string on the wire; structured variants stay tagged.
+impl Serialize for MessageContent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            MessageContent::Text(s) => serializer.serialize_str(s),
+            other => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                match other {
+                    MessageContent::Code(c) => map.serialize_entry("Code", c)?,
+                    MessageContent::Reasoning(r) => map.serialize_entry("Reasoning", r)?,
+                    MessageContent::Mixed(parts) => map.serialize_entry("Mixed", parts)?,
+                    MessageContent::Text(_) => unreachable!(),
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        match v {
+            serde_json::Value::String(s) => Ok(MessageContent::Text(s)),
+            serde_json::Value::Object(map) if map.len() == 1 => {
+                let (key, val) = map.into_iter().next().expect("len checked");
+                match key.as_str() {
+                    "Text" => serde_json::from_value::<String>(val)
+                        .map(MessageContent::Text)
+                        .map_err(serde::de::Error::custom),
+                    "Code" => serde_json::from_value::<CodeBlock>(val)
+                        .map(MessageContent::Code)
+                        .map_err(serde::de::Error::custom),
+                    "Reasoning" => serde_json::from_value::<ReasoningSummary>(val)
+                        .map(MessageContent::Reasoning)
+                        .map_err(serde::de::Error::custom),
+                    "Mixed" => serde_json::from_value::<Vec<MessageContent>>(val)
+                        .map(MessageContent::Mixed)
+                        .map_err(serde::de::Error::custom),
+                    _ => Err(serde::de::Error::custom("unknown message content variant")),
+                }
+            }
+            _ => Err(serde::de::Error::custom("invalid message content")),
+        }
+    }
 }
 
 impl MessageContent {
@@ -417,6 +465,34 @@ mod tests {
             MessageContent::Text("part2".to_string()),
         ]);
         assert_eq!(mixed.as_text(), "part1\npart2");
+    }
+
+    #[test]
+    fn message_content_text_serializes_as_plain_string() {
+        let text = MessageContent::Text("ready".to_string());
+        let json = serde_json::to_value(&text).unwrap();
+        assert_eq!(json, serde_json::Value::String("ready".into()));
+
+        let decoded: MessageContent = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.as_text(), "ready");
+    }
+
+    #[test]
+    fn message_content_tagged_round_trips() {
+        let code = MessageContent::Code(CodeBlock {
+            language: "rust".to_string(),
+            code: "fn main() {}".to_string(),
+            filename: None,
+        });
+        let json = serde_json::to_value(&code).unwrap();
+        assert!(json.is_object());
+
+        let decoded: MessageContent = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.as_text(), "fn main() {}");
+
+        let legacy: MessageContent =
+            serde_json::from_value(serde_json::json!({ "Text": "legacy" })).unwrap();
+        assert_eq!(legacy.as_text(), "legacy");
     }
 
     #[test]
