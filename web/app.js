@@ -631,6 +631,76 @@
     settingsDialog.addEventListener('click', (e) => {
       if (e.target === settingsDialog) settingsDialog.close();
     });
+
+    // Tab switching
+    const tabs = settingsDialog.querySelectorAll('.settings-tab');
+    const panels = settingsDialog.querySelectorAll('.settings-panel');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.tab;
+        tabs.forEach((t) => t.classList.remove('active'));
+        panels.forEach((p) => p.classList.remove('active'));
+        tab.classList.add('active');
+        const panel = settingsDialog.querySelector(`#panel-${target}`);
+        if (panel) panel.classList.add('active');
+      });
+    });
+
+    // Theme selection
+    const themeItems = settingsDialog.querySelectorAll('.theme-item');
+    themeItems.forEach((item) => {
+      item.addEventListener('click', () => {
+        themeItems.forEach((i) => i.classList.remove('active'));
+        item.classList.add('active');
+        const theme = item.dataset.theme;
+        applyTheme(theme);
+      });
+    });
+  }
+
+  // Theme application
+  function applyTheme(theme) {
+    const themes = {
+      dark: { bg: '#15120F', panel: '#1B1714', surface: '#28211A', text: '#F2EEE8' },
+      light: { bg: '#FFFFFF', panel: '#F5F5F5', surface: '#E8E8E8', text: '#1A1A1A' },
+      ocean: { bg: '#0A1929', panel: '#0D2137', surface: '#132F4C', text: '#E0F2FE' },
+      forest: { bg: '#0F1F0F', panel: '#1A2E1A', surface: '#253D25', text: '#E8F5E9' },
+      sunset: { bg: '#2D1B1B', panel: '#3D2424', surface: '#4D2D2D', text: '#FEE2E2' },
+      lavender: { bg: '#1E1B2E', panel: '#2A2640', surface: '#363252', text: '#EDE9FE' },
+      coffee: { bg: '#1A1410', panel: '#241C14', surface: '#2E2418', text: '#F5E6D3' },
+    };
+    const t = themes[theme] || themes.dark;
+    const root = document.documentElement;
+    root.style.setProperty('--bg', t.bg);
+    root.style.setProperty('--panel', t.panel);
+    root.style.setProperty('--surface', t.surface);
+    root.style.setProperty('--text', t.text);
+    localStorage.setItem('fennec-theme', theme);
+  }
+
+  // Load saved theme
+  const savedTheme = localStorage.getItem('fennec-theme') || 'dark';
+  applyTheme(savedTheme);
+  const savedThemeItem = document.querySelector(`.theme-item[data-theme="${savedTheme}"]`);
+  if (savedThemeItem) savedThemeItem.classList.add('active');
+
+  // Permission mode switching
+  const permBtns = document.querySelectorAll('.permission-btn');
+  permBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      permBtns.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const mode = btn.dataset.mode;
+      localStorage.setItem('fennec-permission-mode', mode);
+    });
+  });
+
+  // Load saved permission mode
+  const savedPerm = localStorage.getItem('fennec-permission-mode') || 'ask';
+  const savedPermBtn = document.querySelector(`.permission-btn[data-mode="${savedPerm}"]`);
+  if (savedPermBtn) {
+    permBtns.forEach((b) => b.classList.remove('active'));
+    savedPermBtn.classList.add('active');
   }
 
   // Initial render

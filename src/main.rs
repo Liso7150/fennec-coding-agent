@@ -21,7 +21,7 @@ mod task;
 mod browser;
 mod agent;
 mod repository;
-mod events;
+pub mod events;
 mod updater;
 mod ag_ui;
 
