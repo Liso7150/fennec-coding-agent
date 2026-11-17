@@ -141,9 +141,37 @@
             <span class="composer-hint">Hold to dictate</span>
           </div>
           <div class="permission-mode">
-            <button class="permission-btn active" data-mode="ask" type="button">🛡️ Ask every time</button>
-            <button class="permission-btn" data-mode="auto" type="button">⚡ Auto approve</button>
-            <button class="permission-btn" data-mode="full" type="button">🔓 Full access</button>
+            <button class="permission-trigger" id="permission-trigger" type="button">
+              <span class="permission-trigger-icon" id="permission-trigger-icon">🛡️</span>
+              <span class="permission-trigger-label" id="permission-trigger-label">Ask every time</span>
+              <span class="permission-trigger-arrow">▾</span>
+            </button>
+            <div class="permission-dropdown" id="permission-dropdown" hidden>
+              <button class="permission-option" data-mode="ask" type="button">
+                <span class="permission-option-icon">🛡️</span>
+                <div class="permission-option-text">
+                  <span class="permission-option-title">Ask every time</span>
+                  <span class="permission-option-desc">Always ask before commands, external edits, and internet use</span>
+                </div>
+                <span class="permission-option-check" data-check="ask">✓</span>
+              </button>
+              <button class="permission-option" data-mode="auto" type="button">
+                <span class="permission-option-icon">🕐</span>
+                <div class="permission-option-text">
+                  <span class="permission-option-title">Auto approve</span>
+                  <span class="permission-option-desc">Only asks when a potential risk is detected.</span>
+                </div>
+                <span class="permission-option-check" data-check="auto">✓</span>
+              </button>
+              <button class="permission-option permission-option-danger" data-mode="full" type="button">
+                <span class="permission-option-icon">⚠️</span>
+                <div class="permission-option-text">
+                  <span class="permission-option-title">Full access</span>
+                  <span class="permission-option-desc">Never ask, with full access to your files, terminal, and the internet</span>
+                </div>
+                <span class="permission-option-check" data-check="full">✓</span>
+              </button>
+            </div>
           </div>
           <button class="send-button" id="send-button" type="button" disabled>
             <span>↑</span>

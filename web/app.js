@@ -684,24 +684,48 @@
   const savedThemeItem = document.querySelector(`.theme-item[data-theme="${savedTheme}"]`);
   if (savedThemeItem) savedThemeItem.classList.add('active');
 
-  // Permission mode switching
-  const permBtns = document.querySelectorAll('.permission-btn');
-  permBtns.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      permBtns.forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      const mode = btn.dataset.mode;
-      localStorage.setItem('fennec-permission-mode', mode);
+  // Permission mode dropdown
+  const permTrigger = document.getElementById('permission-trigger');
+  const permDropdown = document.getElementById('permission-dropdown');
+  const permTriggerIcon = document.getElementById('permission-trigger-icon');
+  const permTriggerLabel = document.getElementById('permission-trigger-label');
+  const permOptions = document.querySelectorAll('.permission-option');
+
+  const permMeta = {
+    ask: { icon: '🛡️', label: 'Ask every time' },
+    auto: { icon: '🕐', label: 'Auto approve' },
+    full: { icon: '⚠️', label: 'Full access' },
+  };
+
+  function setPermissionMode(mode) {
+    permOptions.forEach((opt) => opt.classList.toggle('active', opt.dataset.mode === mode));
+    const meta = permMeta[mode] || permMeta.ask;
+    permTriggerIcon.textContent = meta.icon;
+    permTriggerLabel.textContent = meta.label;
+    localStorage.setItem('fennec-permission-mode', mode);
+  }
+
+  if (permTrigger && permDropdown) {
+    permTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      permDropdown.hidden = !permDropdown.hidden;
     });
-  });
+
+    permOptions.forEach((opt) => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setPermissionMode(opt.dataset.mode);
+        permDropdown.hidden = true;
+      });
+    });
+
+    document.addEventListener('click', () => { permDropdown.hidden = true; });
+    permDropdown.addEventListener('click', (e) => { e.stopPropagation(); });
+  }
 
   // Load saved permission mode
   const savedPerm = localStorage.getItem('fennec-permission-mode') || 'ask';
-  const savedPermBtn = document.querySelector(`.permission-btn[data-mode="${savedPerm}"]`);
-  if (savedPermBtn) {
-    permBtns.forEach((b) => b.classList.remove('active'));
-    savedPermBtn.classList.add('active');
-  }
+  setPermissionMode(savedPerm);
 
   // Workspace management
   let workspaces = JSON.parse(localStorage.getItem('fennec-workspaces') || '[]');
