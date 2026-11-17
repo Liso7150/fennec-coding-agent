@@ -115,10 +115,15 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = "127.0.0.1:8787";
+    // The shared agent loop (fennec-core) may already own 8787; fall back to
+    // 8788 so the coding-agent web UI can still serve and open in a browser.
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:8787").await {
+        Ok(l) => l,
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:8788").await.unwrap(),
+    };
+    let addr = listener.local_addr().unwrap();
     tracing::info!("Fennec coding agent backend listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     // The coding-agent's UI is the web PWA: open it in the user's default
     // browser. (fennec-desktop instead shows the native gpui application.)
     open_default_browser(&format!("http://{}", addr));
