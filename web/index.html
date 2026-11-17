@@ -74,25 +74,9 @@
         <div class="section-header">
           <span class="section-label">RECENT TASKS</span>
         </div>
+        <input type="search" id="task-search" placeholder="Filter tasks…" hidden>
         <ul class="task-list" id="task-list" aria-label="Recent tasks">
-          <li class="task-item active">
-            <div class="task-item-title">Audit Fennec workspace status</div>
-            <div class="task-item-meta">
-              <span class="task-status-dot running"></span>
-              <span>Running</span>
-              <span>·</span>
-              <span>Liso7150/fennec</span>
-            </div>
-          </li>
-          <li class="task-item">
-            <div class="task-item-title">Verify event-stream contracts</div>
-            <div class="task-item-meta">
-              <span class="task-status-dot complete"></span>
-              <span>Complete</span>
-              <span>·</span>
-              <span>fennec-core</span>
-            </div>
-          </li>
+          <!-- Rendered by app.js -->
         </ul>
       </div>
 
@@ -105,16 +89,16 @@
     <!-- Center panel: Timeline, task queue, composer -->
     <main class="center-panel">
       <!-- Timeline header -->
-      <div class="timeline-header">
-        <div class="timeline-header-title">Liso7150/fennec · main</div>
+      <div class="timeline-header" id="timeline-header" hidden>
+        <div class="timeline-header-title" id="timeline-repo">Liso7150/fennec · main</div>
         <div class="timeline-header-main">
           <div>
-            <h1>Fennec implementation status audit</h1>
+            <h1 id="timeline-title">New task</h1>
             <div class="timeline-header-subtitle">Chronological local-agent activity and verification for the active repository.</div>
           </div>
-          <div class="status-badge">
+          <div class="status-badge" id="timeline-status">
             <span class="dot"></span>
-            <span>Running</span>
+            <span id="timeline-status-text">Running</span>
           </div>
         </div>
       </div>
@@ -167,15 +151,10 @@
       <div class="inspector-section">
         <div class="inspector-section-header">
           <span>ACTIVE AGENTS</span>
-          <span class="section-count" id="agent-count">1 online</span>
+          <span class="section-count" id="agent-count">0 online</span>
         </div>
-        <div class="agent-item">
-          <div class="agent-icon">🤖</div>
-          <div class="agent-info">
-            <div class="agent-name">Fennec</div>
-            <div class="agent-task">Coordinating workspace audit</div>
-            <div class="agent-status running">Running · 04:21</div>
-          </div>
+        <div id="agent-list">
+          <!-- Rendered by app.js -->
         </div>
       </div>
 
@@ -269,6 +248,19 @@
       </div>
       <p id="connect-error" class="error-text" role="alert" hidden></p>
     </form>
+  </dialog>
+
+  <!-- Diff review dialog -->
+  <dialog id="diff-dialog" aria-labelledby="diff-title">
+    <div class="dialog-header">
+      <h2 id="diff-title">Review diff</h2>
+      <button class="icon-button" type="button" aria-label="Close diff" id="diff-close">×</button>
+    </div>
+    <div class="diff-meta">
+      <span id="diff-file" class="mono"></span>
+      <span><span id="diff-add" style="color:var(--ok)"></span> <span id="diff-del" style="color:var(--err)"></span></span>
+    </div>
+    <pre id="diff-body" class="diff-body mono"></pre>
   </dialog>
 
   <noscript><div class="noscript">JavaScript is required for Fennec Workspace.</div></noscript>

@@ -13,6 +13,8 @@
     inspectorOpen: true,
     backendConnected: false,
     nextId: 1,
+    agents: [],
+    searchOpen: false,
   };
 
   // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -28,8 +30,14 @@
   const backendStatus = $('backend-status');
   const statusDot = document.querySelector('.status-dot');
   const agentCount = $('agent-count');
+  const agentList = $('agent-list');
   const artifactCount = $('artifact-count');
   const attentionBadge = $('attention-badge');
+  const timelineHeader = $('timeline-header');
+  const timelineTitle = $('timeline-title');
+  const timelineStatusText = $('timeline-status-text');
+  const timelineStatus = $('timeline-status');
+  const taskSearch = $('task-search');
 
   // ── Persistence ────────────────────────────────────────────────────────────
   function loadState() {
