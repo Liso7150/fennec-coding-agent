@@ -12,10 +12,59 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use gpui::hsla;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+struct ThemePreset {
+    name: &'static str,
+    mode: ThemeMode,
+    accent: [f32; 4],
+}
+
+impl ThemePreset {
+    fn apply(&self, cx: &mut gpui::App) {
+        Theme::update(cx, |theme| {
+            theme.mode = self.mode;
+            theme.colors.accent = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
+            theme.colors.primary = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
+            theme.colors.button_primary = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
+            theme.colors.link = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
+        });
+    }
+
+    fn id(&self) -> &'static str {
+        match (self.mode, self.accent[0] as u8) {
+            (ThemeMode::Dark, 210) => "dark",
+            (ThemeMode::Light, 210) => "light",
+            (ThemeMode::Dark, 55) => "ocean",
+            (ThemeMode::Dark, 35) => "forest",
+            (ThemeMode::Dark, 10) => "sunset",
+            (ThemeMode::Dark, 75) => "lavender",
+            _ => "custom",
+        }
+    }
+}
+
+fn theme_presets() -> Vec<ThemePreset> {
+    vec![
+        ThemePreset { name: "Dark", mode: ThemeMode::Dark, accent: [210.0/360.0, 0.5, 0.5, 1.0] },
+        ThemePreset { name: "Light", mode: ThemeMode::Light, accent: [210.0/360.0, 0.5, 0.5, 1.0] },
+        ThemePreset { name: "Ocean", mode: ThemeMode::Dark, accent: [55.0/360.0, 0.7, 0.5, 1.0] },
+        ThemePreset { name: "Forest", mode: ThemeMode::Dark, accent: [35.0/360.0, 0.6, 0.45, 1.0] },
+        ThemePreset { name: "Sunset", mode: ThemeMode::Dark, accent: [10.0/360.0, 0.75, 0.55, 1.0] },
+        ThemePreset { name: "Lavender", mode: ThemeMode::Dark, accent: [75.0/360.0, 0.55, 0.6, 1.0] },
+    ]
+}
+
+fn find_preset_index(theme_id: &str) -> usize {
+    theme_presets().iter().position(|p| p.id() == theme_id).unwrap_or(0)
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Msg {
@@ -62,8 +111,20 @@ struct History {
     queued: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
-struct Settings { server_url: Option<String> }
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct Settings {
+    server_url: Option<String>,
+    engine_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    access_mode: Option<String>,
+    theme: Option<String>,
+    font_size: Option<f32>,
+    auto_save: Option<bool>,
+    notifications: Option<bool>,
+    debug_mode: Option<bool>,
+    experimental_features: Option<bool>,
+}
 
 struct App {
     tasks: Vec<Task>,
@@ -75,6 +136,16 @@ struct App {
     search: Entity<InputState>,
     composer: Entity<InputState>,
     server_url: String,
+    engine_url: String,
+    api_key: String,
+    model: String,
+    access_mode: String,
+    theme: String,
+    font_size: f32,
+    auto_save: bool,
+    notifications: bool,
+    debug_mode: bool,
+    experimental_features: bool,
     settings_path: PathBuf,
     backend_ok: bool,
     agents: Vec<String>,
@@ -86,6 +157,7 @@ struct App {
     pending_content: Option<(u64, u64)>,
     tools: std::collections::HashMap<String, (u64, u64)>,
     _task: gpui_kit::Task<()>,
+    scroll_handle: ScrollHandle,
 }
 
 #[derive(Debug)]
@@ -138,15 +210,35 @@ impl App {
             }
         }).detach();
 
-        let server_url = load_settings(&settings_path);
+        let settings = load_settings(&settings_path);
+        let server_url = settings.server_url
+            .or_else(|| std::env::var("FENNEC_AGENT_URL").ok())
+            .unwrap_or_else(|| "http://127.0.0.1:8787".into());
+        let engine_url = settings.engine_url
+            .or_else(|| std::env::var("FENNEC_ENGINE_URL").ok())
+            .unwrap_or_else(|| "http://127.0.0.1:8184".into());
+        let api_key = settings.api_key
+            .or_else(|| std::env::var("FENNEC_API_KEY").ok())
+            .or_else(|| std::env::var("COLI_API_KEY").ok())
+            .unwrap_or_else(|| "local".into());
+        let model = settings.model.unwrap_or_else(|| "qwen3_5_moe".into());
+        let access_mode = settings.access_mode.unwrap_or_else(|| "ask".into());
+        let theme = settings.theme.unwrap_or_else(|| "dark".into());
+        let font_size = settings.font_size.unwrap_or(14.0);
+        let auto_save = settings.auto_save.unwrap_or(true);
+        let notifications = settings.notifications.unwrap_or(true);
+        let debug_mode = settings.debug_mode.unwrap_or(false);
+        let experimental_features = settings.experimental_features.unwrap_or(false);
 
         let app = Self {
             tasks: vec![], active: None, queued: vec![], inspector: true,
             attention_only: false, search_open: false, search, composer,
-            server_url, settings_path, backend_ok: false, agents: vec![],
+            server_url, engine_url, api_key, model, access_mode, theme, font_size, auto_save,
+            notifications, debug_mode, experimental_features,
+            settings_path, backend_ok: false, agents: vec![],
             path, next_id: 1, response_rx: rx, response_tx: tx,
             pending_think: None, pending_content: None, tools: std::collections::HashMap::new(),
-            _task,
+            _task, scroll_handle: ScrollHandle::new(),
         };
         app.fetch_backend_info();
         app
@@ -212,7 +304,19 @@ impl App {
     }
 
     fn save_settings(&self) {
-        let s = Settings { server_url: Some(self.server_url.clone()) };
+        let s = Settings {
+            server_url: Some(self.server_url.clone()),
+            engine_url: Some(self.engine_url.clone()),
+            api_key: Some(self.api_key.clone()),
+            model: Some(self.model.clone()),
+            access_mode: Some(self.access_mode.clone()),
+            theme: Some(self.theme.clone()),
+            font_size: Some(self.font_size),
+            auto_save: Some(self.auto_save),
+            notifications: Some(self.notifications),
+            debug_mode: Some(self.debug_mode),
+            experimental_features: Some(self.experimental_features),
+        };
         if let Ok(s) = serde_json::to_string_pretty(&s) {
             let _ = std::fs::write(&self.settings_path, s);
         }
@@ -281,12 +385,14 @@ impl App {
                                 });
                             }
                             self.pending_content = Some((tid, mid));
+                            self.scroll_handle.scroll_to_bottom();
                             (tid, mid)
                         }
                     };
                     if let Some(m) = self.msg_mut(tid, mid) {
                         m.content.push_str(&text);
                     }
+                    self.scroll_handle.scroll_to_bottom();
                 }
                 BackendResponse::ActionStarted { tool_id, title } => {
                     let Some((tid, _)) = self.pending_think else { continue };
@@ -411,6 +517,7 @@ impl App {
     fn add_msg(&mut self, m: Msg, cx: &mut Context<Self>) {
         self.ensure_task();
         if let Some(t) = self.task_mut() { t.msgs.push(m); }
+        self.scroll_handle.scroll_to_bottom();
         self.save();
         cx.notify();
     }
@@ -433,6 +540,7 @@ impl App {
 
     fn select_task(&mut self, id: u64) {
         self.active = Some(id);
+        self.scroll_handle.scroll_to_bottom();
         self.save();
     }
 
@@ -512,6 +620,34 @@ impl App {
     fn clear_queue(&mut self) {
         self.queued.clear();
         self.save();
+    }
+
+    fn clear_history(&mut self, cx: &mut Context<Self>) {
+        self.tasks.clear();
+        self.active = None;
+        self.queued.clear();
+        self.next_id = 1;
+        self.pending_think = None;
+        self.pending_content = None;
+        self.tools.clear();
+        self.save();
+        cx.notify();
+    }
+
+    fn cycle_access_mode(&mut self) {
+        let modes = ["ask", "auto", "full"];
+        let current = modes.iter().position(|m| m == &self.access_mode.as_str()).unwrap_or(0);
+        let next = modes[(current + 1) % modes.len()];
+        self.access_mode = next.to_string();
+        self.save_settings();
+    }
+
+    fn cycle_model(&mut self) {
+        let models = ["qwen3_5_moe", "edge0_145b", "qwen36_35b"];
+        let current = models.iter().position(|m| m == &self.model.as_str()).unwrap_or(0);
+        let next = models[(current + 1) % models.len()];
+        self.model = next.to_string();
+        self.save_settings();
     }
 
     fn remove_from_queue(&mut self, idx: usize) {
@@ -685,13 +821,10 @@ impl App {
 
 fn now() -> String { chrono::Local::now().format("%H:%M").to_string() }
 
-fn load_settings(settings_path: &Path) -> String {
+fn load_settings(settings_path: &Path) -> Settings {
     std::fs::read_to_string(settings_path).ok()
         .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-        .and_then(|s| s.server_url)
-        .unwrap_or_else(|| {
-            std::env::var("FENNEC_AGENT_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".into())
-        })
+        .unwrap_or_default()
 }
 
 fn human_size(bytes: u64) -> String {
@@ -748,27 +881,45 @@ impl App {
         let query = self.search.read(cx).value().trim().to_string();
         let tasks = self.filtered_tasks(&query);
         let attention = self.attention_count();
-        div().w(px(250.0)).flex_shrink_0().bg(t.background).border_r_1().border_color(t.border).flex().flex_col().p_3().gap_3()
-            .child(div().p_3().rounded_md().border_1().border_color(t.border)
-                .child(Label::new("ACTIVE WORKSPACE").text_size(px(10.0)).text_color(t.muted_foreground))
-                .child(Label::new("Liso7150/fennec").text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD))
-                .child(Label::new("main · Local mode").text_size(px(11.0)).text_color(t.muted_foreground)))
-            .child(div().flex().flex_col().gap_1()
-                .child(self.nav("Coding", true, cx))
-                .child(self.nav("New Task", false, cx))
-                .child(Button::new("nav-attention").label(format!("My Attention{}", if attention > 0 { format!(" · {attention}") } else { String::new() })).ghost().small()
-                    .when(self.attention_only, |b| b.bg(t.muted))
-                    .on_click(cx.listener(|a, _, _, cx| { a.attention_only = !a.attention_only; cx.notify(); })))
-                .child(Button::new("nav-search").label("Search").ghost().small()
-                    .when(self.search_open, |b| b.bg(t.muted))
-                    .on_click(cx.listener(|a, _, _, cx| { a.search_open = !a.search_open; cx.notify(); }))))
+        div().w(px(260.0)).flex_shrink_0().bg(t.background).border_r_1().border_color(t.border).flex().flex_col().p_4().gap_4()
+            // Active Workspace Card
+            .child(div().p_4().rounded_lg().bg(t.muted).border_1().border_color(t.border)
+                .child(Label::new("ACTIVE WORKSPACE").text_size(px(10.0)).text_color(t.muted_foreground).font_weight(FontWeight::MEDIUM))
+                .child(Label::new("Liso7150/fennec").text_size(px(15.0)).font_weight(FontWeight::BOLD).mt_1())
+                .child(div().flex().items_center().gap_1().mt_1()
+                    .child(Label::new("⚡").text_size(px(11.0)).text_color(t.accent))
+                    .child(Label::new("main · Local mode").text_size(px(11.0)).text_color(t.muted_foreground))))
+            // Navigation
+            .child(div().flex().flex_col().gap_2()
+                .child(Button::new("nav-coding").label("Coding").w_full().h(px(36.0)).rounded_md()
+                    .bg(t.accent.opacity(0.2)).border_1().border_color(t.accent)
+                    .on_click(cx.listener(|a, _, _, cx| { a.attention_only = false; a.search_open = false; cx.notify(); })))
+                .child(Button::new("nav-new-task").label("+ New Task").w_full().h(px(36.0)).rounded_md()
+                    .border_1().border_color(t.border)
+                    .on_click(cx.listener(|a, _, _, cx| { a.new_task(); cx.notify(); })))
+                .child(div().flex().items_center().justify_between()
+                    .child(Button::new("nav-attention").label("◎ My Attention").ghost().small()
+                        .when(self.attention_only, |b| b.bg(t.muted))
+                        .on_click(cx.listener(|a, _, _, cx| { a.attention_only = !a.attention_only; cx.notify(); })))
+                    .child(if attention > 0 {
+                        Label::new(format!("{attention}")).text_size(px(12.0)).text_color(t.accent).font_weight(FontWeight::SEMIBOLD)
+                    } else {
+                        Label::new("")
+                    })))
+                .child(Button::new("nav-search").label("⌕ Search").w_full().h(px(36.0)).rounded_md()
+                    .border_1().border_color(t.border)
+                    .when(self.search_open, |b| b.bg(t.accent.opacity(0.15)).border_color(t.accent))
+                    .on_click(cx.listener(|a, _, _, cx| { a.search_open = !a.search_open; cx.notify(); })))
+            // Search dock
             .children(self.search_open.then(|| {
                 let t = t.clone();
-                div().id("search-dock").child(Input::new(&self.search).h(px(28.0)).text_size(px(12.0)))
+                div().flex().flex_col().gap_1()
+                    .child(Input::new(&self.search).h(px(32.0)).text_size(px(12.0)))
                     .child(Label::new(if query.is_empty() { String::new() } else { format!("{} tasks", tasks.len()) }).text_size(px(10.0)).text_color(t.muted_foreground))
             }))
-            .child(div().flex().flex_col().gap_1().overflow_y_scrollbar()
-                .child(Label::new("RECENT TASKS").text_size(px(10.0)).text_color(t.muted_foreground))
+            // Recent Tasks
+            .child(div().flex().flex_col().gap_2().flex_1().overflow_y_scrollbar()
+                .child(Label::new("RECENT TASKS").text_size(px(10.0)).text_color(t.muted_foreground).font_weight(FontWeight::MEDIUM))
                 .children(tasks.iter().take(8).map(|tk| {
                     let t = t.clone();
                     let id = tk.id;
@@ -776,39 +927,29 @@ impl App {
                     let status = tk.status.clone();
                     let repo = tk.repo.clone();
                     let is_active = self.active == Some(id);
+                    let status_color = match status.as_str() {
+                        "Running" | "Planning" => t.green,
+                        "Complete" => t.blue,
+                        "Failed" | "Warning" => t.red,
+                        "WaitingForApproval" | "NeedsAttention" => t.yellow,
+                        _ => t.muted_foreground,
+                    };
                     div().id(ElementId::NamedInteger("task-item".into(), id))
-                        .p_2().rounded_md().cursor_pointer()
-                        .when(is_active, |d| d.bg(t.muted))
-                        .hover(|d| d.bg(t.muted))
+                        .p_3().rounded_md().cursor_pointer()
+                        .bg(t.muted).border_1().border_color(t.border)
+                        .when(is_active, |d| d.border_color(t.accent))
+                        .hover(|d| d.bg(t.muted).border_color(t.accent))
                         .on_click(cx.listener(move |a, _, _, cx| { a.select_task(id); cx.notify(); }))
                         .child(Label::new(title).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).truncate())
                         .child(div().flex().items_center().gap_1().mt_1()
                             .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot_color(&status, t.green, t.blue, t.red, t.yellow)))
-                            .child(Label::new(status).text_size(px(11.0)).text_color(t.muted_foreground))
+                            .child(Label::new(status).text_size(px(11.0)).text_color(status_color).font_weight(FontWeight::MEDIUM))
                             .child(Label::new("·").text_size(px(11.0)))
                             .child(Label::new(repo).text_size(px(11.0)).text_color(t.muted_foreground).truncate()))
                 })))
-            .child(div().mt_auto().pt_3().border_t_1().border_color(t.border)
-                .child(Label::new("Liso7150").text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD))
-                .child(Label::new("Local account").text_size(px(11.0)).text_color(t.muted_foreground)))
     }
 
-    fn nav(&self, label: &str, active: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme().clone();
-        let id = label.to_string();
-        let listener_label = label.to_string();
-        Button::new(id).label(label).ghost().small().when(active, |b| b.bg(t.muted))
-            .on_click(cx.listener(move |a, _, _, cx| {
-                match listener_label.as_str() {
-                    "Coding" => { a.attention_only = false; a.search_open = false; }
-                    "New Task" => { a.new_task(); }
-                    _ => {}
-                }
-                cx.notify();
-            }))
-    }
-
-    fn center(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn center(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let tk = self.task();
         let show_queue = self.working() && !self.queued.is_empty();
@@ -830,10 +971,10 @@ impl App {
             .child(self.composer(cx))
     }
 
-    fn timeline(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn timeline(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let msgs = self.task().map(|t| t.msgs.clone()).unwrap_or_default();
-        div().flex_1().overflow_y_scrollbar().px_5().py_3().flex().flex_col().gap_4()
+        div().id("timeline-scroll").flex_1().track_scroll(&self.scroll_handle).overflow_y_scrollbar().px_5().py_3().flex().flex_col().gap_4()
             .children(msgs.into_iter().map(|m| {
                 let t = t.clone();
                 let id = m.id;
@@ -975,6 +1116,16 @@ impl App {
     fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let send_enabled = !self.composer.read(cx).value().trim().is_empty();
+        let access_icon = match self.access_mode.as_str() {
+            "full" => "!",
+            "auto" => "⚡",
+            _ => "?",
+        };
+        let access_label = match self.access_mode.as_str() {
+            "full" => "Full access",
+            "auto" => "Auto approve",
+            _ => "Ask every time",
+        };
         div().border_t_1().border_color(t.border).bg(t.background).px_5().py_3().flex().flex_col().gap_2()
             // gpui-base inputs all render element id "input-state"; this id-bearing
             // parent keeps their a11y node ids distinct when a UIA client connects.
@@ -985,16 +1136,20 @@ impl App {
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("add").label("+").ghost().small()
                         .on_click(cx.listener(|a, _, _, cx| { a.new_task(); cx.notify(); })))
-                    .child(Button::new("attach").label("📎").ghost().small()
+                    .child(Button::new("attach").label("⊞").ghost().small()
                         .on_click(cx.listener(|a, _, _, cx| { a.attach_file(cx); })))
-                    .child(Button::new("mic").label("🎤").ghost().small()
+                    .child(Button::new("access-mode").label(format!("{access_icon} {access_label}")).ghost().small()
+                        .on_click(cx.listener(|a, _, _, cx| { a.cycle_access_mode(); cx.notify(); }))))
+                .child(div().flex().items_center().gap_2()
+                    .child(Button::new("model-select").label(format!("⚡ {}", self.model)).ghost().small()
+                        .on_click(cx.listener(|a, _, _, cx| { a.cycle_model(); cx.notify(); })))
+                    .child(Button::new("mic").label("◎").ghost().small()
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.push_notification(Notification::info("Dictation needs audio capture, which is not wired up in this build. Type or paste text instead."), cx);
                         })))
-                    .child(Label::new("Hold to dictate").text_size(px(12.0)).text_color(t.muted_foreground)))
-                .child(Button::new("send").label("↑").primary()
-                    .when(!send_enabled, |b| b.disabled(true))
-                    .on_click(cx.listener(|a, _, window, cx| { a.send(window, cx); }))))
+                    .child(Button::new("send").label("↑").primary()
+                        .when(!send_enabled, |b| b.disabled(true))
+                        .on_click(cx.listener(|a, _, window, cx| { a.send(window, cx); })))))
     }
 
     fn attach_file(&mut self, cx: &mut Context<Self>) {
@@ -1011,41 +1166,292 @@ impl App {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let url_input = cx.new(|cx| {
+        let server_input = cx.new(|cx| {
             let mut s = InputState::new(window, cx);
             s.set_value(self.server_url.clone(), window, cx);
             s
         });
+        let engine_input = cx.new(|cx| {
+            let mut s = InputState::new(window, cx);
+            s.set_value(self.engine_url.clone(), window, cx);
+            s
+        });
+        let apikey_input = cx.new(|cx| {
+            let mut s = InputState::new(window, cx);
+            s.set_value(self.api_key.clone(), window, cx);
+            s
+        });
+        let fontsize_input = cx.new(|cx| {
+            let mut s = InputState::new(window, cx);
+            s.set_value(self.font_size.to_string(), window, cx);
+            s
+        });
         let weak = cx.entity().downgrade();
+        let current_theme: Rc<RefCell<String>> = Rc::new(RefCell::new(self.theme.clone()));
+        let current_autosave = self.auto_save;
+        let current_notifications = self.notifications;
+        let current_debug = self.debug_mode;
+        let current_experimental = self.experimental_features;
+        let settings_path_for_theme = self.settings_path.clone();
+        let active_tab: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+
         window.open_dialog(cx, move |dialog, _, _| {
-            let url_input = url_input.clone();
+            let server_input = server_input.clone();
+            let engine_input = engine_input.clone();
+            let apikey_input = apikey_input.clone();
+            let fontsize_input = fontsize_input.clone();
             let weak = weak.clone();
+            let current_theme = current_theme.clone();
+            let settings_path_for_theme = settings_path_for_theme.clone();
+            let active_tab = active_tab.clone();
+
             dialog
                 .title("Settings")
                 .content({
-                    let url_input = url_input.clone();
-                    move |content, _, cx| {
+                    let server_input = server_input.clone();
+                    let engine_input = engine_input.clone();
+                    let apikey_input = apikey_input.clone();
+                    let fontsize_input = fontsize_input.clone();
+                    let weak = weak.clone();
+                    let current_theme = current_theme.clone();
+                    let settings_path_for_theme = settings_path_for_theme.clone();
+                    let active_tab = active_tab.clone();
+                    move |content, _window, cx| {
+                        let tab = active_tab.get();
+                        let tab_names = ["Connection", "Appearance", "Behavior", "Advanced"];
+
                         content
-                            .child(Label::new("Server URL").font_weight(FontWeight::MEDIUM))
-                            .child(div().id("settings-url-dock").mt_1().child(Input::new(&url_input)))
-                            .child(Label::new("Backend for tasks, streaming events and agents. Default: http://127.0.0.1:8787").text_size(px(11.0)).text_color(cx.theme().muted_foreground).mt_1())
+                            .flex()
+                            .flex_row()
+                            .gap_6()
+                            .h(px(480.0))
+                            // Vertical tabs on the left
+                            .child(
+                                div().w(px(150.0)).flex_shrink_0().flex().flex_col().gap_1()
+                                    .children(tab_names.iter().enumerate().map(|(i, name)| {
+                                        let active_tab = active_tab.clone();
+                                        let is_active = tab == i;
+                                        let t = cx.theme().clone();
+                                        div().w_full()
+                                            .child(Button::new(format!("tab-{}", i))
+                                                .label(*name)
+                                                .ghost()
+                                                .small()
+                                                .w_full()
+                                                .justify_start()
+                                                .when(is_active, |b| b.bg(t.muted).border_l_2().border_color(t.accent))
+                                                .on_click(move |_, window, _cx| {
+                                                    active_tab.set(i);
+                                                    window.refresh();
+                                                }))
+                                    }))
+                            )
+                            // Content area on the right
+                            .child(
+                                div().flex_1().h_full().overflow_y_scrollbar().pr_2()
+                                    .children(match tab {
+                                        0 => vec![
+                                            // Connection section
+                                            div().flex().flex_col().gap_4()
+                                                .child(div().flex().flex_col().gap_1()
+                                                    .child(Label::new("Connection").font_weight(FontWeight::BOLD).text_size(px(16.0)))
+                                                    .child(div().h(px(1.0)).bg(cx.theme().border).mt_1()))
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Backend Server URL").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Input::new(&server_input).h(px(32.0)))
+                                                    .child(Label::new("Coding agent backend (tasks, events, agents). Default: http://127.0.0.1:8787")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Engine URL").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Input::new(&engine_input).h(px(32.0)))
+                                                    .child(Label::new("Fennec inference engine. Default: http://127.0.0.1:8184")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("API Key").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Input::new(&apikey_input).h(px(32.0)))
+                                                    .child(Label::new("Authentication key for engine access. Default: local")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .into_any_element(),
+                                        ],
+                                        1 => vec![
+                                            // Appearance section
+                                            div().flex().flex_col().gap_4()
+                                                .child(div().flex().flex_col().gap_1()
+                                                    .child(Label::new("Appearance").font_weight(FontWeight::BOLD).text_size(px(16.0)))
+                                                    .child(div().h(px(1.0)).bg(cx.theme().border).mt_1()))
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Theme").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(div().mt_2().gap_1().flex().flex_col()
+                                                        .children({
+                                                            let presets = theme_presets();
+                                                            let current_theme_cell = current_theme.clone();
+                                                            let settings_path_clone = settings_path_for_theme.clone();
+                                                            let theme_snapshot = cx.theme().clone();
+                                                            presets.into_iter().enumerate().map(move |(i, preset)| {
+                                                                let settings_path_clone = settings_path_clone.clone();
+                                                                let current_theme_cell = current_theme_cell.clone();
+                                                                let preset_id = preset.id().to_string();
+                                                                let preset_name = preset.name;
+                                                                let is_selected = preset_id == *current_theme_cell.borrow();
+                                                                let t = theme_snapshot.clone();
+                                                                Button::new(format!("theme-{}", i)).ghost().small().w_full().justify_start()
+                                                                    .when(is_selected, |b| b.bg(t.accent.opacity(0.15)).border_1().border_color(t.accent))
+                                                                    .when(!is_selected, |b| b.border_1().border_color(t.border))
+                                                                    .on_click(move |_, window, cx| {
+                                                                        preset.apply(cx);
+                                                                        *current_theme_cell.borrow_mut() = preset.id().to_string();
+                                                                        window.refresh();
+                                                                        let theme_id = preset.id().to_string();
+                                                                        let path = settings_path_clone.clone();
+                                                                        std::thread::spawn(move || {
+                                                                            if let Ok(contents) = std::fs::read_to_string(&path) {
+                                                                                if let Ok(mut settings) = serde_json::from_str::<Settings>(&contents) {
+                                                                                    settings.theme = Some(theme_id);
+                                                                                    if let Ok(json) = serde_json::to_string_pretty(&settings) {
+                                                                                        let _ = std::fs::write(&path, json);
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    })
+                                                                    .child(div().flex().items_center().gap_2()
+                                                                        .child(div().w(px(14.0)).h(px(14.0)).rounded_full().border_2()
+                                                                            .when(is_selected, |d| d.border_color(t.accent).bg(t.accent))
+                                                                            .when(!is_selected, |d| d.border_color(t.muted_foreground)))
+                                                                        .child(Label::new(preset_name).text_size(px(13.0))))
+                                                            })
+                                                        })
+                                                    )
+                                                    .child(Label::new("Select a color theme. Changes apply immediately.")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground).mt_1())
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Font Size").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Input::new(&fontsize_input).h(px(32.0)))
+                                                    .child(Label::new("UI font size in pixels. Default: 14")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .into_any_element(),
+                                        ],
+                                        2 => vec![
+                                            // Behavior section
+                                            div().flex().flex_col().gap_4()
+                                                .child(div().flex().flex_col().gap_1()
+                                                    .child(Label::new("Behavior").font_weight(FontWeight::BOLD).text_size(px(16.0)))
+                                                    .child(div().h(px(1.0)).bg(cx.theme().border).mt_1()))
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(div().flex().items_center().justify_between()
+                                                        .child(Label::new("Auto-save").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                        .child(Label::new(if current_autosave { "✓ Enabled" } else { "✗ Disabled" })
+                                                            .text_size(px(11.0)).text_color(if current_autosave { cx.theme().green } else { cx.theme().muted_foreground })))
+                                                    .child(Label::new("Automatically save task history and settings.")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(div().flex().items_center().justify_between()
+                                                        .child(Label::new("Notifications").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                        .child(Label::new(if current_notifications { "✓ Enabled" } else { "✗ Disabled" })
+                                                            .text_size(px(11.0)).text_color(if current_notifications { cx.theme().green } else { cx.theme().muted_foreground })))
+                                                    .child(Label::new("Show desktop notifications for task completion.")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Clear History").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Button::new("clear-history-btn").label("Clear all task history").ghost().small().mt_1()
+                                                        .on_click({
+                                                            let weak = weak.clone();
+                                                            move |_, window, cx| {
+                                                                let _ = weak.update(cx, |a, cx| {
+                                                                    a.clear_history(cx);
+                                                                    window.push_notification(Notification::info("History cleared."), cx);
+                                                                });
+                                                            }
+                                                        }))
+                                                    .child(Label::new("Remove all tasks and conversations.")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .into_any_element(),
+                                        ],
+                                        3 => vec![
+                                            // Advanced section
+                                            div().flex().flex_col().gap_4()
+                                                .child(div().flex().flex_col().gap_1()
+                                                    .child(Label::new("Advanced").font_weight(FontWeight::BOLD).text_size(px(16.0)))
+                                                    .child(div().h(px(1.0)).bg(cx.theme().border).mt_1()))
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(div().flex().items_center().justify_between()
+                                                        .child(Label::new("Debug Mode").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                        .child(Label::new(if current_debug { "✓ Enabled" } else { "✗ Disabled" })
+                                                            .text_size(px(11.0)).text_color(if current_debug { cx.theme().green } else { cx.theme().muted_foreground })))
+                                                    .child(Label::new("Enable verbose logging and debug information.")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(div().flex().items_center().justify_between()
+                                                        .child(Label::new("Experimental Features").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                        .child(Label::new(if current_experimental { "✓ Enabled" } else { "✗ Disabled" })
+                                                            .text_size(px(11.0)).text_color(if current_experimental { cx.theme().green } else { cx.theme().muted_foreground })))
+                                                    .child(Label::new("Enable unstable features (AG-UI protocol, new samplers).")
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Data Directory").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Label::new(format!("{}", settings_path_for_theme.parent().unwrap_or(&settings_path_for_theme).display()))
+                                                        .text_size(px(11.0)).text_color(cx.theme().muted_foreground).font_family("monospace"))
+                                                )
+                                                .child(div().flex().flex_col().gap_2().p_3().rounded_md().bg(cx.theme().muted).border_1().border_color(cx.theme().border)
+                                                    .child(Label::new("Export Settings").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
+                                                    .child(Button::new("export-settings-btn").label("Export to JSON").ghost().small().mt_1()
+                                                        .on_click({
+                                                            let weak = weak.clone();
+                                                            move |_, window, cx| {
+                                                                let _ = weak.update(cx, |a, cx| {
+                                                                    a.save_settings();
+                                                                    window.push_notification(Notification::info("Settings exported."), cx);
+                                                                });
+                                                            }
+                                                        }))
+                                                )
+                                                .into_any_element(),
+                                        ],
+                                        _ => vec![],
+                                    })
+                            )
                     }
                 })
                 .footer(div().flex().justify_end().gap_2().p_3()
                     .child(Button::new("settings-cancel").label("Cancel").ghost()
                         .on_click(|_, window, cx| { window.close_dialog(cx); }))
-                    .child(Button::new("settings-connect").label("Connect").primary()
+                    .child(Button::new("settings-save").label("Save").primary()
                         .on_click({
-                            let url_input = url_input.clone();
+                            let server_input = server_input.clone();
+                            let engine_input = engine_input.clone();
+                            let apikey_input = apikey_input.clone();
+                            let fontsize_input = fontsize_input.clone();
                             let weak = weak.clone();
                             move |_, window, cx| {
-                                let url = url_input.read(cx).value().trim().to_string();
+                                let server_url = server_input.read(cx).value().trim().to_string();
+                                let engine_url = engine_input.read(cx).value().trim().to_string();
+                                let api_key = apikey_input.read(cx).value().trim().to_string();
+                                let font_size_str = fontsize_input.read(cx).value().trim().to_string();
+                                let font_size = font_size_str.parse::<f32>().unwrap_or(14.0);
+
                                 let _ = weak.update(cx, |a, cx| {
-                                    if !url.is_empty() {
-                                        a.server_url = url;
-                                        a.save_settings();
-                                        a.fetch_backend_info();
+                                    if !server_url.is_empty() {
+                                        a.server_url = server_url;
                                     }
+                                    if !engine_url.is_empty() {
+                                        a.engine_url = engine_url;
+                                    }
+                                    if !api_key.is_empty() {
+                                        a.api_key = api_key;
+                                    }
+                                    a.font_size = font_size;
+                                    a.save_settings();
+                                    a.fetch_backend_info();
                                     cx.notify();
                                 });
                                 window.close_dialog(cx);
@@ -1136,19 +1542,33 @@ fn main() {
     let path = data_dir.join("history.json");
     let settings_path = data_dir.join("settings.json");
 
-    application().with_assets(assets::Assets).run(|cx| {
+    application().with_assets(assets::Assets).run(move |cx| {
         init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
         let bounds = Bounds::centered(None, size(px(1400.0), px(900.0)), cx);
+        
+        let settings_path_clone = settings_path.clone();
         cx.open_window(WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() }, |window, cx| {
             let composer = cx.new(|cx| InputState::new(window, cx));
             let search = cx.new(|cx| InputState::new(window, cx));
             let view = cx.new(|cx| {
-                let mut app = App::new(path, settings_path, composer, search, window, cx);
+                let mut app = App::new(path, settings_path_clone.clone(), composer, search, window, cx);
                 app.load();
                 app
             });
             cx.new(|cx| Root::new(view, window, cx))
         }).expect("Failed to open window");
+        
+        let presets = theme_presets();
+        if let Ok(contents) = std::fs::read_to_string(&settings_path) {
+            if let Ok(settings) = serde_json::from_str::<Settings>(&contents) {
+                if let Some(theme_id) = &settings.theme {
+                    let idx = find_preset_index(theme_id);
+                    if let Some(preset) = presets.get(idx) {
+                        preset.apply(cx);
+                    }
+                }
+            }
+        }
     });
 }
