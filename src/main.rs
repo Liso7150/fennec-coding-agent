@@ -119,7 +119,27 @@ async fn main() {
     tracing::info!("Fennec coding agent backend listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    // The coding-agent's UI is the web PWA: open it in the user's default
+    // browser. (fennec-desktop instead shows the native gpui application.)
+    open_default_browser(&format!("http://{}", addr));
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Open a URL in the OS default browser without flashing a console window.
+fn open_default_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 async fn serve_index() -> Html<&'static str> {

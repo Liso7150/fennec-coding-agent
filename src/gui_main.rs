@@ -262,6 +262,14 @@ struct App {
     notifications: bool,
     debug_mode: bool,
     experimental_features: bool,
+    perm_dropdown_open: bool,
+    model_dropdown_open: bool,
+    stt_recording: bool,
+    stt_stop: Arc<AtomicBool>,
+    stt_buffer: Arc<std::sync::Mutex<Vec<f32>>>,
+    stt_rate: Arc<std::sync::atomic::AtomicU32>,
+    stt_stream: Option<cpal::Stream>,
+    composer_restore: Option<String>,
     allow_write: bool,
     allow_shell: bool,
     allow_web: bool,
@@ -298,6 +306,7 @@ enum BackendResponse {
     Complete { task_id: u64, status: String, final_text: String },
     Failed(String),
     BackendInfo { names: Vec<String>, healthy: bool },
+    Stt(String),
 }
 
 // ---- Rich markdown rendering ----
@@ -603,6 +612,13 @@ impl App {
             attention_only: false, search_open: false, search, composer,
             server_url, engine_url, api_key, model, access_mode, theme, font_size, auto_save,
             notifications, debug_mode, experimental_features,
+            perm_dropdown_open: false, model_dropdown_open: false,
+            stt_recording: false,
+            stt_stop: Arc::new(AtomicBool::new(false)),
+            stt_buffer: Arc::new(std::sync::Mutex::new(Vec::new())),
+            stt_rate: Arc::new(std::sync::atomic::AtomicU32::new(16000)),
+            stt_stream: None,
+            composer_restore: None,
             allow_write, allow_shell, allow_web, ask_each,
             settings_path: settings_path.clone(), backend_ok: false, agents: vec![],
             path, next_id: 1, response_rx: rx, response_tx: tx,
@@ -652,6 +668,13 @@ impl App {
                     }
                 }
                 self.next_id = next;
+                // Drop empty drafts so a fresh install shows an empty history.
+                self.tasks.retain(|t| !t.msgs.is_empty());
+                if let Some(a) = self.active {
+                    if !self.tasks.iter().any(|t| t.id == a) {
+                        self.active = self.tasks.last().map(|t| t.id);
+                    }
+                }
             }
         }
         if let Some(t) = self.task_mut() {
@@ -669,7 +692,11 @@ impl App {
     }
 
     fn save(&self) {
-        let h = History { tasks: self.tasks.clone(), active: self.active, queued: self.queued.clone() };
+        // Empty drafts are not history: first run stays empty, real
+        // conversations persist across restarts.
+        let tasks: Vec<Task> = self.tasks.iter().filter(|t| !t.msgs.is_empty()).cloned().collect();
+        let active = self.active.filter(|id| tasks.iter().any(|t| t.id == *id));
+        let h = History { tasks, active, queued: self.queued.clone() };
         if let Ok(s) = serde_json::to_string_pretty(&h) {
             let _ = std::fs::write(&self.path, s);
         }
@@ -773,6 +800,11 @@ impl App {
     fn poll_responses(&mut self, cx: &mut Context<Self>) {
         while let Ok(resp) = self.response_rx.try_recv() {
             match resp {
+                BackendResponse::Stt(text) => {
+                    self.stt_recording = false;
+                    self.line = String::new();
+                    if !text.is_empty() { self.composer_restore = Some(text); }
+                }
                 BackendResponse::BackendInfo { names, healthy } => {
                     self.agents = names;
                     self.backend_ok = healthy;
@@ -1096,6 +1128,124 @@ impl App {
         self.save_settings();
     }
 
+    fn set_access_mode(&mut self, mode: &str) {
+        self.access_mode = mode.to_string();
+        match mode {
+            "auto" => { self.allow_write = true; self.allow_shell = true; self.allow_web = true; self.ask_each = false; }
+            "full" => { self.allow_write = true; self.allow_shell = true; self.allow_web = true; self.ask_each = false; }
+            _ => { self.allow_write = false; self.allow_shell = false; self.allow_web = false; self.ask_each = true; }
+        }
+        self.save_settings();
+    }
+
+    fn access_label(&self) -> &'static str {
+        match self.access_mode.as_str() {
+            "auto" => "Auto approve",
+            "full" => "Full access",
+            _ => "Ask every time",
+        }
+    }
+
+    fn access_icon(&self) -> &'static str {
+        match self.access_mode.as_str() {
+            "auto" => "🕐",
+            "full" => "⚠",
+            _ => "🛡",
+        }
+    }
+
+    fn access_color(&self, t: &gpui_kit::component::Theme) -> gpui::Hsla {
+        match self.access_mode.as_str() {
+            "auto" => t.green,
+            "full" => t.red,
+            _ => t.accent,
+        }
+    }
+
+    fn model_display_name(&self) -> String {
+        match self.model.as_str() {
+            "qwen3_5_moe" => "Qwen3.5-MoE".to_string(),
+            "edge0_145b" => "Edge0-145B".to_string(),
+            "qwen36_35b" => "Qwen36-35B".to_string(),
+            _ => self.model.clone(),
+        }
+    }
+
+    fn toggle_stt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.stt_recording {
+            self.stt_stop.store(true, Ordering::Relaxed);
+            self.stt_stream = None;
+            self.stt_recording = false;
+            self.line = "Transcribing…".to_string();
+            cx.notify();
+            return;
+        }
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let host = cpal::default_host();
+        let device = match host.default_input_device() {
+            Some(d) => d,
+            None => { window.push_notification(Notification::info("No microphone found."), cx); return; }
+        };
+        let config = match device.default_input_config() {
+            Ok(c) => c,
+            Err(e) => { window.push_notification(Notification::info(format!("Mic config error: {e}")), cx); return; }
+        };
+        let rate = config.sample_rate().0;
+        self.stt_rate.store(rate, Ordering::Relaxed);
+        self.stt_buffer.lock().unwrap().clear();
+        self.stt_stop.store(false, Ordering::Relaxed);
+        let channels = config.channels() as usize;
+        let buffer = self.stt_buffer.clone();
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_input_stream(&config.into(), move |data: &[f32], _| {
+                let mut b = buffer.lock().unwrap();
+                for frame in data.chunks(channels) { b.push(frame[0]); }
+            }, |e| eprintln!("stt error: {e}"), None),
+            cpal::SampleFormat::I16 => {
+                let buffer = self.stt_buffer.clone();
+                device.build_input_stream(&config.into(), move |data: &[i16], _| {
+                    let mut b = buffer.lock().unwrap();
+                    for frame in data.chunks(channels) { b.push(frame[0] as f32 / 32768.0); }
+                }, |e| eprintln!("stt error: {e}"), None)
+            },
+            _ => { window.push_notification(Notification::info("Unsupported mic format."), cx); return; }
+        };
+        let stream = match stream { Ok(s) => s, Err(e) => { window.push_notification(Notification::info(format!("Mic open error: {e}")), cx); return; } };
+        if stream.play().is_err() { window.push_notification(Notification::info("Could not start mic."), cx); return; }
+        self.stt_recording = true;
+        self.stt_stream = Some(stream);
+        self.line = "Recording… click the mic again to stop and transcribe.".to_string();
+        cx.notify();
+        let stop = self.stt_stop.clone();
+        let buffer = self.stt_buffer.clone();
+        let rate_arc = self.stt_rate.clone();
+        let tx = self.response_tx.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) { std::thread::sleep(std::time::Duration::from_millis(50)); }
+            let samples = buffer.lock().unwrap().clone();
+            let rate = rate_arc.load(Ordering::Relaxed);
+            let text = transcribe_samples(&samples, rate);
+            let _ = tx.send(BackendResponse::Stt(text));
+        });
+    }
+
+    fn speak_tts(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if text.is_empty() { return; }
+        let text = text.to_string();
+        std::thread::spawn(move || {
+            #[cfg(target_os = "windows")]
+            {
+                let script = format!("Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{}')", text.replace("'", "''"));
+                let _ = std::process::Command::new("powershell").args(["-Command", &script]).output();
+            }
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("say").arg(&text).output();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("espeak").arg(&text).output();
+        });
+        window.push_notification(Notification::info("Speaking…"), cx);
+    }
+
     fn remove_from_queue(&mut self, idx: usize) {
         if idx < self.queued.len() {
             self.queued.remove(idx);
@@ -1300,6 +1450,28 @@ impl App {
         self.save();
         cx.notify();
 
+        // Fold attachments into the prompt: text files inline, images noted for
+        // vision-capable backends.
+        let mut text = text;
+        if let Some(t) = self.task() {
+            for m in &t.msgs {
+                if m.kind != MsgKind::Attach { continue; }
+                let Some(p) = m.meta.as_ref().and_then(|x| x.path.clone()) else { continue };
+                let path = Path::new(&p);
+                let name = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
+                let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
+                    if let Ok(bytes) = std::fs::read(path) {
+                        use base64::Engine as _;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        text.push_str(&format!("\n[attached image {} data:image/{};base64,{}]", name, ext, b64));
+                    }
+                } else if let Ok(content) = std::fs::read_to_string(path) {
+                    text.push_str(&format!("\n\n[{}]\n{}", name, content));
+                }
+            }
+        }
+
         let url = self.server_url.clone();
         let tx = self.response_tx.clone();
         std::thread::spawn(move || {
@@ -1435,8 +1607,35 @@ fn dot_color(status: &str, green: Hsla, blue: Hsla, red: Hsla, yellow: Hsla) -> 
     }
 }
 
+/// Write captured mono f32 samples to WAV and POST to the faster-whisper sidecar.
+fn transcribe_samples(samples: &[f32], rate: u32) -> String {
+    if samples.is_empty() { return String::new(); }
+    let spec = hound::WavSpec { channels: 1, sample_rate: rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut wav = Vec::new();
+    {
+        let mut writer = match hound::WavWriter::new(std::io::Cursor::new(&mut wav), spec) { Ok(w) => w, Err(_) => return String::new() };
+        for &s in samples { let _ = writer.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16); }
+        let _ = writer.finalize();
+    }
+    let client = match reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(60)).build() { Ok(c) => c, Err(_) => return String::new() };
+    for path in ["/v1/audio/transcriptions", "/transcribe"] {
+        let url = format!("http://127.0.0.1:8183{}", path);
+        let part = match reqwest::blocking::multipart::Part::bytes(wav.clone()).file_name("audio.wav").mime_str("audio/wav") { Ok(p) => p, Err(_) => continue };
+        let form = reqwest::blocking::multipart::Form::new().part("file", part).text("model", "whisper-1");
+        if let Ok(resp) = client.post(&url).multipart(form).send() {
+            if let Ok(json) = resp.json::<serde_json::Value>() {
+                if let Some(text) = json.get("text").and_then(|t| t.as_str()) { return text.to_string(); }
+            }
+        }
+    }
+    String::new()
+}
+
 impl Render for App {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(text) = self.composer_restore.take() {
+            self.composer.update(cx, |state, cx| state.set_value(text, _w, cx));
+        }
         let t = cx.theme().clone();
         div().flex().flex_col().size_full().bg(t.background).text_color(t.foreground)
             .child(self.topbar(cx))
@@ -1444,6 +1643,7 @@ impl Render for App {
                 .child(self.left(cx))
                 .child(self.center(cx))
                 .children(self.inspector.then(|| self.right(cx))))
+            .child(self.dropdowns(cx))
     }
 }
 
@@ -1601,10 +1801,10 @@ impl App {
     fn center(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let tk = self.task();
-        let show_queue = !self.queued.is_empty();
+        let is_working = self.working();
+        let show_queue = is_working && !self.queued.is_empty();
         let ws = self.active_workspace();
         let ws_name = ws.map(|w| w.name.as_str()).unwrap_or("No workspace");
-        let is_working = self.working();
         div().flex().flex_col().flex_1().overflow_hidden()
             .child(div().flex().items_start().justify_between().px_5().pt_4().pb_3().border_b_1().border_color(t.border)
                 .child(div().flex().flex_col().gap_1()
@@ -1749,13 +1949,19 @@ impl App {
                                             .child(Label::new(format!("-{del}")).text_size(px(12.0)).text_color(t.red))))))
                     }
 
-                    MsgKind::Result => div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
+                    MsgKind::Result => {
+                        let speak = m.content.clone();
+                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
                         .child(self.avatar("F", t.success))
                         .child(div().flex().flex_col().gap_1().max_w(px(680.0))
                             .child(div().flex().items_center().gap_2()
                                 .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground)))
+                                .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground))
+                                .child(Button::new(ElementId::NamedInteger("tts".into(), id)).ghost().xsmall()
+                                    .child(Label::new("🔊").text_size(px(12.0)).text_color(t.muted_foreground))
+                                    .on_click(cx.listener(move |a, _, window, cx| { a.speak_tts(&speak, window, cx); }))))
                             .child(rich_div(&t, &m.content, false)))
+                    }
                 }
             }))
     }
@@ -1825,30 +2031,98 @@ impl App {
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("add").label("+").ghost().small()
                         .on_click(cx.listener(|a, _, _, cx| { a.new_task(); cx.notify(); })))
-                    .child(Button::new("attach").label("⊞").ghost().small()
+                    .child(Button::new("attach").ghost().small()
+                        .child(Label::new("📎").text_size(px(14.0)))
                         .on_click(cx.listener(|a, _, _, cx| { a.attach_file(cx); })))
-                    .child(Button::new("perm-edits").label("edits").ghost().small()
-                        .when(self.allow_write, |b| b.bg(t.green.opacity(0.2)).border_1().border_color(t.green))
-                        .on_click(cx.listener(|a, _, _, cx| { a.allow_write = !a.allow_write; a.save_settings(); cx.notify(); })))
-                    .child(Button::new("perm-commands").label("commands").ghost().small()
-                        .when(self.allow_shell, |b| b.bg(t.blue.opacity(0.2)).border_1().border_color(t.blue))
-                        .on_click(cx.listener(|a, _, _, cx| { a.allow_shell = !a.allow_shell; a.save_settings(); cx.notify(); })))
-                    .child(Button::new("perm-web").label("web").ghost().small()
-                        .when(self.allow_web, |b| b.bg(t.yellow.opacity(0.2)).border_1().border_color(t.yellow))
-                        .on_click(cx.listener(|a, _, _, cx| { a.allow_web = !a.allow_web; a.save_settings(); cx.notify(); })))
-                    .child(Button::new("perm-ask").label("ask each").ghost().small()
-                        .when(self.ask_each, |b| b.bg(t.red.opacity(0.2)).border_1().border_color(t.red))
-                        .on_click(cx.listener(|a, _, _, cx| { a.ask_each = !a.ask_each; a.save_settings(); cx.notify(); }))))
+                    .child(Button::new("permission-trigger").ghost().small()
+                        .child(Label::new(format!("{} {}", self.access_icon(), self.access_label())).text_size(px(12.0)).text_color(self.access_color(&t)))
+                        .on_click(cx.listener(|a, _, _, cx| {
+                            a.perm_dropdown_open = !a.perm_dropdown_open;
+                            a.model_dropdown_open = false;
+                            cx.notify();
+                        }))))
                 .child(div().flex().items_center().gap_2()
-                    .child(Button::new("model-select").label(format!("⚡ {}", self.model)).ghost().small()
-                        .on_click(cx.listener(|a, _, _, cx| { a.cycle_model(); cx.notify(); })))
-                    .child(Button::new("mic").label("◎").ghost().small()
-                        .on_click(cx.listener(|_, _, window, cx| {
-                            window.push_notification(Notification::info("Dictation needs audio capture, which is not wired up in this build. Type or paste text instead."), cx);
+                    .child(Button::new("model-select").ghost().small()
+                        .child(Label::new(format!("⚡ {}", self.model_display_name())).text_size(px(12.0)))
+                        .on_click(cx.listener(|a, _, _, cx| {
+                            a.model_dropdown_open = !a.model_dropdown_open;
+                            a.perm_dropdown_open = false;
+                            cx.notify();
                         })))
+                    .child(Button::new("mic").ghost().small()
+                        .child(Label::new(if self.stt_recording { "⏹" } else { "🎤" }).text_size(px(14.0)))
+                        .on_click(cx.listener(|a, _, window, cx| { a.toggle_stt(window, cx); })))
                     .child(Button::new("send").label("↑").primary()
                         .when(!send_enabled, |b| b.disabled(true))
                         .on_click(cx.listener(|a, _, window, cx| { a.send(window, cx); })))))
+    }
+
+    /// Permission + model dropdowns rendered at the window root so they are not
+    /// clipped by the centre pane's overflow_hidden.
+    fn dropdowns(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let mut overlay = div();
+        if self.perm_dropdown_open {
+            overlay = overlay.child(
+                div().absolute().bottom(px(70.0)).left(px(20.0))
+                    .rounded_md().border_1().border_color(t.border).bg(t.background).shadow_lg()
+                    .p_2().w(px(460.0)).flex().flex_col().gap_1()
+                    .child(self.perm_option("ask", "🛡", "Ask every time", "Always ask before commands, external edits, and internet use", cx))
+                    .child(self.perm_option("auto", "🕐", "Auto approve", "Only asks when a potential risk is detected.", cx))
+                    .child(self.perm_option("full", "⚠", "Full access", "Never ask, with full access to your files, terminal, and the internet", cx))
+            );
+        }
+        if self.model_dropdown_open {
+            let mut md = div().absolute().bottom(px(70.0)).right(px(20.0))
+                .rounded_md().border_1().border_color(t.border).bg(t.background).shadow_lg()
+                .p_2().w(px(220.0)).flex().flex_col().gap_1();
+            for (id, name) in [("qwen3_5_moe", "Qwen3.5-MoE"), ("edge0_145b", "Edge0-145B"), ("qwen36_35b", "Qwen36-35B")] {
+                let selected = self.model == id;
+                let id = id.to_string();
+                md = md.child(Button::new(format!("model-{}", id)).ghost().small().w_full().justify_start()
+                    .child(div().flex().items_center().gap_3().px_3().py_2()
+                        .child(Label::new(name).text_size(px(13.0)).font_weight(FontWeight::MEDIUM))
+                        .child(div().flex_1())
+                        .child(Label::new(if selected { "✓" } else { "" }).text_size(px(13.0)).text_color(t.green)))
+                    .on_click(cx.listener(move |a, _, _, cx| {
+                        a.model = id.clone();
+                        a.model_dropdown_open = false;
+                        a.save_settings();
+                        cx.notify();
+                    })));
+            }
+            md = md.child(div().border_t_1().border_color(t.border).my_1())
+                .child(Button::new("model-download").ghost().small().w_full().justify_start()
+                    .child(div().flex().items_center().gap_3().px_3().py_2()
+                        .child(Label::new("⬇").text_size(px(15.0)))
+                        .child(Label::new("Download new model...").text_size(px(12.0)).text_color(t.muted_foreground)))
+                    .on_click(cx.listener(|a, _, window, cx| {
+                        window.push_notification(Notification::info("Model download coming soon."), cx);
+                        a.model_dropdown_open = false;
+                        cx.notify();
+                    })));
+            overlay = overlay.child(md);
+        }
+        overlay
+    }
+
+    fn perm_option(&self, mode: &str, icon: &str, title: &str, desc: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let selected = self.access_mode == mode;
+        let mode = mode.to_string();
+        let danger = mode == "full";
+        Button::new(format!("perm-opt-{}", mode)).ghost().w_full().justify_start()
+            .on_click(cx.listener(move |a, _, _, cx| {
+                a.set_access_mode(&mode);
+                a.perm_dropdown_open = false;
+                cx.notify();
+            }))
+            .child(div().flex().items_start().gap_3().px_3().py_3().w_full()
+                .child(Label::new(icon).text_size(px(18.0)).mt(px(2.0)))
+                .child(div().flex().flex_col().flex_1().gap_0p5()
+                    .child(Label::new(title).text_size(px(13.0)).font_weight(FontWeight::MEDIUM).text_color(if danger { t.red } else { t.foreground }))
+                    .child(Label::new(desc).text_size(px(11.0)).text_color(t.muted_foreground)))
+                .child(Label::new(if selected { "✓" } else { "" }).text_size(px(13.0)).text_color(t.green).mt(px(2.0))))
     }
 
     fn attach_file(&mut self, cx: &mut Context<Self>) {
