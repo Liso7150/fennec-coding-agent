@@ -1715,7 +1715,6 @@
   applyInspectorState();
 
   // Composer tools
-  $('btn-add').addEventListener('click', () => handleNav('new-task'));
   $('btn-attach').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     if (fileInput.files && fileInput.files.length > 0) addFiles(Array.from(fileInput.files));
