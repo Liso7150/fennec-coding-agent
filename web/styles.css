@@ -135,12 +135,16 @@ label { font-size: 12px; }
 .workspaces-section { margin-bottom: 8px; }
 .workspace-list { list-style: none; padding: 0; margin: 0; }
 .workspace-item {
-  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-  font-size: 13px; cursor: pointer; border-radius: var(--radius-sm);
+  display: block; padding: 2px 0;
+  font-size: 13px; border-radius: var(--radius-sm);
 }
-.workspace-item:hover { background: var(--hover); }
-.workspace-item.active { background: var(--surface); border-left: 3px solid var(--brand); }
-.workspace-icon { font-size: 14px; }
+.workspace-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; border-radius: var(--radius-sm); }
+.workspace-row:hover { background: var(--hover); }
+.workspace-item.active > .workspace-row { background: var(--surface); border-left: 3px solid var(--brand); }
+.workspace-tasks { list-style: none; margin: 0; padding: 0 0 0 16px; display: flex; flex-direction: column; gap: 2px; }
+.workspace-tasks .task-item { padding: 6px 10px; }
+.workspace-folders { font-size: 10px; color: var(--text-muted); padding: 0 12px 4px 32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-icon { font-size: 14px; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; flex-shrink: 0; }
 .workspace-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-delete {
   opacity: 0; background: none; border: none; color: var(--text-muted);
@@ -671,3 +675,30 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
     transition: none !important;
   }
 }
+
+/* Workspace creation dialog (parity with native gpui dialog) */
+.dialog-body { padding: 16px; overflow-y: auto; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
+.button { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--radius-sm); padding: 7px 14px; font-size: 13px; cursor: pointer; }
+.button:hover { background: var(--hover); }
+.button.ghost { background: transparent; }
+.button.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+.button.primary:hover { background: #d98a6a; }
+.ws-dialog-body { display: flex; flex-direction: column; gap: 10px; }
+.ws-field-label { font-size: 12px; font-weight: 600; color: var(--text); display: block; }
+.ws-name-input { width: 100%; }
+.ws-folder-add { display: flex; gap: 6px; }
+.ws-folder-input { flex: 1; font-family: monospace; font-size: 12px; }
+.ws-folder-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ws-folder-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; background: var(--surface); border-radius: var(--radius-sm); padding: 4px 8px; }
+.ws-folder-path { font-family: monospace; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-icon-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.ws-icon-btn { width: 36px; height: 36px; font-size: 17px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.ws-icon-btn.selected { border-color: var(--brand); background: var(--brand-dim); }
+.ws-color-grid { display: flex; gap: 8px; }
+.ws-color-btn { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+.ws-color-btn.selected { border-color: var(--text); }
+.ws-index-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+.ws-index-row > span { display: flex; flex-direction: column; gap: 2px; }
+.ws-index-hint { font-size: 11px; color: var(--text-muted); }
+.ws-index-row input[type="checkbox"] { width: auto; }

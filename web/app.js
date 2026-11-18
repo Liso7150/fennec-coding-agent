@@ -74,7 +74,6 @@
   // ── DOM refs ───────────────────────────────────────────────────────────────
   const $ = (id) => document.getElementById(id);
   const timeline = $('timeline');
-  const taskList = $('task-list');
   const taskQueue = $('task-queue');
   const taskQueueList = $('task-queue-list');
   const taskQueueCount = $('task-queue-count');
@@ -248,9 +247,37 @@
     return parts.join('\n\n') || '(no details)';
   }
 
-  // ── Render: left panel — recent tasks ──────────────────────────────────────
-  function renderTaskList() {
-    taskList.innerHTML = '';
+  // ── Render: left panel — workspace tree with tasks indented ────────────────
+  function buildTaskRow(tk) {
+    const li = document.createElement('li');
+    li.className = 'task-item' + (tk.id === state.activeId ? ' active' : '');
+    const dotClass = tk.status === 'Running' || tk.status === 'Planning' ? 'running'
+      : tk.status === 'Complete' ? 'complete'
+      : tk.status === 'Failed' ? 'failed' : 'waiting';
+    li.innerHTML = `
+      <div class="task-item-main">
+        <div class="task-item-title">${escapeHtml(tk.title)}</div>
+        <div class="task-item-meta">
+          <span class="task-status-dot ${dotClass}"></span>
+          <span>${escapeHtml(tk.status)}</span>
+          <span>·</span>
+          <span>${escapeHtml(tk.repo || '')}</span>
+        </div>
+      </div>
+      <div class="task-actions">
+        <button class="task-action-btn" type="button" data-act="rename" title="Rename task" aria-label="Rename task">✎</button>
+        <button class="task-action-btn" type="button" data-act="delete" title="Delete task" aria-label="Delete task">×</button>
+      </div>`;
+    li.addEventListener('click', (e) => {
+      const act = e.target && e.target.dataset ? e.target.dataset.act : null;
+      if (act === 'rename') { renameTask(tk.id); return; }
+      if (act === 'delete') { deleteTask(tk.id); return; }
+      switchTask(tk.id);
+    });
+    return li;
+  }
+
+  function filteredTasks() {
     const q = state.searchQuery.trim().toLowerCase();
     let shown = state.tasks.slice().reverse(); // newest first
     if (q) {
@@ -258,40 +285,12 @@
         (t.title || '').toLowerCase().includes(q) ||
         (t.msgs || []).some((m) => (m.content || '').toLowerCase().includes(q)));
     }
-    if (shown.length === 0) {
-      taskList.innerHTML = q
-        ? '<li class="task-empty">No tasks match the filter.</li>'
-        : '<li class="task-empty">No tasks yet. Type a prompt to start.</li>';
-      return;
-    }
-    for (const tk of shown) {
-      const li = document.createElement('li');
-      li.className = 'task-item' + (tk.id === state.activeId ? ' active' : '');
-      const dotClass = tk.status === 'Running' || tk.status === 'Planning' ? 'running'
-        : tk.status === 'Complete' ? 'complete'
-        : tk.status === 'Failed' ? 'failed' : 'waiting';
-      li.innerHTML = `
-        <div class="task-item-main">
-          <div class="task-item-title">${escapeHtml(tk.title)}</div>
-          <div class="task-item-meta">
-            <span class="task-status-dot ${dotClass}"></span>
-            <span>${escapeHtml(tk.status)}</span>
-            <span>·</span>
-            <span>${escapeHtml(tk.repo || '')}</span>
-          </div>
-        </div>
-        <div class="task-actions">
-          <button class="task-action-btn" type="button" data-act="rename" title="Rename task" aria-label="Rename task">✎</button>
-          <button class="task-action-btn" type="button" data-act="delete" title="Delete task" aria-label="Delete task">×</button>
-        </div>`;
-      li.addEventListener('click', (e) => {
-        const act = e.target && e.target.dataset ? e.target.dataset.act : null;
-        if (act === 'rename') { renameTask(tk.id); return; }
-        if (act === 'delete') { deleteTask(tk.id); return; }
-        switchTask(tk.id);
-      });
-      taskList.appendChild(li);
-    }
+    return shown;
+  }
+
+  function renderTaskList() {
+    // Tasks live inside their workspace node; the tree is the single left list.
+    renderWorkspaces();
   }
 
   function renameTask(id) {
@@ -898,6 +897,7 @@
         status: 'Running',
         repo: ws ? ws.name : 'local',
         repoId: ws && ws.repoId ? ws.repoId : 'local',
+        workspaceId: ws ? ws.id : null,
         branch: 'main',
         msgs: [],
         backendId: null,
@@ -1498,20 +1498,65 @@
     const list = $('workspace-list');
     if (!list) return;
     list.innerHTML = '';
+    const shown = filteredTasks();
+    const q = state.searchQuery.trim().toLowerCase();
+
+    const appendTasks = (ul, tasks) => {
+      for (const tk of tasks) ul.appendChild(buildTaskRow(tk));
+    };
+
     workspaces.forEach((ws) => {
       const li = document.createElement('li');
       li.className = 'workspace-item' + (ws.id === activeWorkspaceId ? ' active' : '');
+      const folders = Array.isArray(ws.source_folders) ? ws.source_folders : [];
       li.innerHTML = `
-        <span class="workspace-icon">${escapeHtml(ws.icon || '📁')}</span>
-        <span class="workspace-label">${escapeHtml(ws.name)}</span>
-        <button class="workspace-delete" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Delete workspace">×</button>`;
-      li.addEventListener('click', (e) => {
+        <div class="workspace-row">
+          <span class="workspace-icon" style="${ws.color ? 'background:' + escapeHtml(ws.color) : ''}">${escapeHtml(ws.icon || '📁')}</span>
+          <span class="workspace-label">${escapeHtml(ws.name)}</span>
+          <button class="workspace-delete" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Delete workspace">×</button>
+        </div>`;
+      li.querySelector('.workspace-row').addEventListener('click', (e) => {
         if (e.target.classList.contains('workspace-delete')) return;
         activeWorkspaceId = ws.id;
         saveWorkspaces();
       });
+      const mine = shown.filter((t) => t.workspaceId === ws.id);
+      if (mine.length > 0 || !q) {
+        const ul = document.createElement('ul');
+        ul.className = 'workspace-tasks';
+        appendTasks(ul, mine);
+        li.appendChild(ul);
+      }
+      if (folders.length > 0) {
+        const f = document.createElement('div');
+        f.className = 'workspace-folders';
+        f.textContent = folders.map((p) => p.split(/[\\/]/).pop()).join(', ');
+        li.appendChild(f);
+      }
       list.appendChild(li);
     });
+
+    const unfiled = shown.filter((t) => !t.workspaceId || !workspaces.some((w) => w.id === t.workspaceId));
+    if (unfiled.length > 0 || (!q && shown.length === 0)) {
+      const li = document.createElement('li');
+      li.className = 'workspace-item unfiled';
+      li.innerHTML = `
+        <div class="workspace-row">
+          <span class="workspace-icon">🗂</span>
+          <span class="workspace-label">Unfiled</span>
+        </div>`;
+      const ul = document.createElement('ul');
+      ul.className = 'workspace-tasks';
+      appendTasks(ul, unfiled);
+      if (unfiled.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'task-empty';
+        empty.textContent = q ? 'No tasks match the filter.' : 'No tasks yet. Type a prompt to start.';
+        ul.appendChild(empty);
+      }
+      li.appendChild(ul);
+      list.appendChild(li);
+    }
 
     list.querySelectorAll('.workspace-delete').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -1522,6 +1567,100 @@
         if (activeWorkspaceId === id) activeWorkspaceId = workspaces[0] ? workspaces[0].id : null;
         saveWorkspaces();
       });
+    });
+  }
+
+  // ── Workspace creation dialog (parity with the native gpui dialog) ─────────
+  const WS_ICONS = ['📁', '💻', '🔬', '🧪', '🎨', '🤖', '⚙️', '🔧', '📦', '🚀'];
+  const WS_COLORS = [
+    { name: 'orange', css: '#d97706' }, { name: 'green', css: '#22c55e' },
+    { name: 'blue', css: '#3b82f6' }, { name: 'yellow', css: '#eab308' },
+    { name: 'red', css: '#ef4444' }, { name: 'pink', css: '#ec4899' },
+    { name: 'purple', css: '#a855f7' }, { name: 'teal', css: '#14b8a6' },
+  ];
+  const wsDraft = { icon: 0, color: 0, folders: [], indexed: true };
+
+  function renderWsFolders() {
+    const ul = $('ws-folder-list');
+    ul.innerHTML = '';
+    wsDraft.folders.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.className = 'ws-folder-row';
+      li.innerHTML = `<span class="ws-folder-path">${escapeHtml(p)}</span>
+        <button class="task-action-btn" type="button" data-i="${i}" aria-label="Remove folder">×</button>`;
+      li.querySelector('button').addEventListener('click', () => {
+        wsDraft.folders.splice(i, 1);
+        renderWsFolders();
+      });
+      ul.appendChild(li);
+    });
+  }
+
+  function renderWsGrids() {
+    const ig = $('ws-icon-grid');
+    ig.innerHTML = '';
+    WS_ICONS.forEach((icon, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ws-icon-btn' + (i === wsDraft.icon ? ' selected' : '');
+      b.textContent = icon;
+      b.setAttribute('aria-label', 'Icon ' + (i + 1));
+      b.addEventListener('click', () => { wsDraft.icon = i; renderWsGrids(); });
+      ig.appendChild(b);
+    });
+    const cg = $('ws-color-grid');
+    cg.innerHTML = '';
+    WS_COLORS.forEach((c, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ws-color-btn' + (i === wsDraft.color ? ' selected' : '');
+      b.style.background = c.css;
+      b.setAttribute('aria-label', c.name);
+      b.addEventListener('click', () => { wsDraft.color = i; renderWsGrids(); });
+      cg.appendChild(b);
+    });
+  }
+
+  function openWorkspaceDialog() {
+    wsDraft.icon = 0; wsDraft.color = 0; wsDraft.folders = []; wsDraft.indexed = true;
+    $('ws-name').value = '';
+    $('ws-folder-input').value = '';
+    $('ws-indexed').checked = true;
+    renderWsFolders();
+    renderWsGrids();
+    $('workspace-dialog').showModal();
+    $('ws-name').focus();
+  }
+
+  function initWorkspaceDialog() {
+    $('ws-folder-add').addEventListener('click', () => {
+      const p = $('ws-folder-input').value.trim();
+      if (!p) { toast('Enter a folder path first.', 'warn'); return; }
+      wsDraft.folders.push(p);
+      $('ws-folder-input').value = '';
+      renderWsFolders();
+    });
+    $('ws-folder-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); $('ws-folder-add').click(); }
+    });
+    const close = () => $('workspace-dialog').close();
+    $('ws-cancel').addEventListener('click', close);
+    $('ws-cancel-x').addEventListener('click', close);
+    $('ws-create').addEventListener('click', () => {
+      const name = $('ws-name').value.trim();
+      if (!name) { toast('Please enter a workspace name.', 'warn'); return; }
+      const id = 'ws-' + Date.now();
+      workspaces.push({
+        id, name,
+        icon: WS_ICONS[wsDraft.icon],
+        color: WS_COLORS[wsDraft.color].css,
+        source_folders: wsDraft.folders.slice(),
+        indexed: $('ws-indexed').checked,
+      });
+      activeWorkspaceId = id;
+      saveWorkspaces();
+      close();
+      toast('Workspace "' + name + '" created.', 'good');
     });
   }
 
@@ -1792,14 +1931,8 @@
   // Workspaces
   const btnAddWorkspace = $('btn-add-workspace');
   if (btnAddWorkspace) {
-    btnAddWorkspace.addEventListener('click', () => {
-      const name = prompt('Workspace name:');
-      if (!name || !name.trim()) return;
-      const id = 'ws-' + Date.now();
-      workspaces.push({ id, name: name.trim(), icon: '📁' });
-      activeWorkspaceId = id;
-      saveWorkspaces();
-    });
+    initWorkspaceDialog();
+    btnAddWorkspace.addEventListener('click', openWorkspaceDialog);
   }
 
   // Settings + theme + font
