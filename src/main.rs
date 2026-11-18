@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Path, State, WebSocketUpgrade},
-    http::StatusCode,
-    response::{Html, IntoResponse, Json},
+    extract::{Path, Request, State, WebSocketUpgrade},
+    http::{header, HeaderValue, StatusCode},
+    middleware,
+    response::{Html, IntoResponse, Json, Response},
     response::sse::{Sse, Event},
     routing::{get, post},
     Router,
@@ -111,6 +112,7 @@ async fn main() {
         .route("/api/events/ws", get(events_ws))
         .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
         .fallback_service(ServeDir::new("web").fallback(get(serve_index)))
+        .layer(middleware::from_fn(revalidate_assets))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -149,6 +151,21 @@ fn open_default_browser(url: &str) {
 
 async fn serve_index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
+}
+
+/// `web/` assets carry a reused `?v=` query string, and without a freshness
+/// directive browsers heuristically cache them indefinitely — an old build's
+/// stylesheet then silently replaces the current UI. `no-cache` forces
+/// revalidation on every load; ServeDir answers If-Modified-Since, so an
+/// unchanged file costs a 304 rather than a re-download.
+async fn revalidate_assets(req: Request, next: middleware::Next) -> Response {
+    let path = req.uri().path().to_owned();
+    let mut res = next.run(req).await;
+    if !path.starts_with("/api/") && path != "/health" {
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    res
 }
 
 async fn health_check() -> Json<HealthResponse> {

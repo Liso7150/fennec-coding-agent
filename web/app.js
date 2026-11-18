@@ -18,6 +18,14 @@
   const POLL_INTERVAL_MS = 1000;
   const POLL_MAX_ATTEMPTS = 180;
 
+  // The only statuses with a run still behind them; anything else on disk is
+  // finished, so a question it still holds is dead, not unanswered.
+  const LIVE_STATUSES = ['Running', 'Planning', 'WaitingForApproval'];
+  // The two reasons a question stops being answerable, worded as the native
+  // surfaces word them (fennec-ui/src/attention.rs renders "not used · <note>").
+  const EXPIRED_ENDED = 'the run ended before an answer arrived';
+  const EXPIRED_GONE = 'the loop no longer holds this question';
+
   // ── Settings (persisted) ───────────────────────────────────────────────────
   function readSetting(key, fallback) {
     const v = localStorage.getItem(key);
@@ -25,6 +33,13 @@
   }
 
   let apiBase = (readSetting('fennec-server-url', '') || '').replace(/\/+$/, '');
+  // Core refuses /api/* without the loopback client header; send it on every call.
+  function apiFetch(path, opts) {
+    const o = opts || {};
+    o.headers = Object.assign({ 'X-Fennec-Client': '1' }, o.headers || {});
+    return fetch(apiBase + path, o);
+  }
+
   const settings = {
     autoSave: readSetting('fennec-auto-save', 'true') !== 'false',
     notifications: readSetting('fennec-notifications', 'true') !== 'false',
@@ -42,6 +57,7 @@
     backendConnected: false,
     nextId: 1,
     searchQuery: '',
+    attentionOnly: false,
     attachments: [], // pending composer attachments (not persisted)
   };
 
@@ -115,11 +131,27 @@
           // Runtime-only flags must never survive a reload.
           t.polling = false;
           t.finalized = false;
+          // A finished conversation cannot still be holding a live question, so
+          // reloads of older history do not pin a dead one in My Attention.
+          if (LIVE_STATUSES.indexOf(t.status) === -1) expireApprovals(t, EXPIRED_ENDED);
           const maxMsg = (t.msgs || []).reduce((m, x) => Math.max(m, x.id || 0), 0);
           state.nextId = Math.max(state.nextId, maxMsg + 1);
         }
       }
     } catch (_) { /* corrupt storage — start fresh */ }
+  }
+
+  // A question with no live run behind it stops being answerable: expired, not
+  // pending, so it leaves the attention count instead of pinning the task.
+  function expireApprovals(task, note, live) {
+    for (const a of (task.approvals || [])) {
+      if (a.status !== 'pending') continue;
+      if (live && live.indexOf(a.id) !== -1) continue;
+      a.status = 'expired';
+      a.note = note;
+      const m = (task.msgs || []).find((x) => x.meta && x.meta.approvalId === a.id);
+      if (m) { m.meta.status = 'expired'; m.meta.note = note; }
+    }
   }
 
   function saveState() {
@@ -308,7 +340,7 @@
     if (!tk) return;
     if (!confirm('Delete task "' + tk.title + '"?')) return;
     if (tk.backendId) {
-      fetch(apiBase + '/api/tasks/' + encodeURIComponent(tk.backendId), { method: 'DELETE' }).catch(() => {});
+      apiFetch('/api/tasks/' + encodeURIComponent(tk.backendId), { method: 'DELETE' }).catch(() => {});
     }
     state.tasks = state.tasks.filter((t) => t.id !== id);
     if (state.activeId === id) {
@@ -330,10 +362,31 @@
   }
 
   // ── Render: center — timeline ──────────────────────────────────────────────
-  function renderTimeline() {
-    timeline.innerHTML = '';
-    const task = activeTask();
+  // Polling re-renders on every tick. Rebuilding unconditionally detaches the
+  // node under the pointer, so an approval button can vanish mid-click, and
+  // forcing the scroll makes the timeline unscrollable while a task runs.
+  function timelineKey(task) {
+    if (!task) return 'none';
+    let key = task.id + '#' + task.status + '#' + (task.title || '');
+    for (const m of (task.msgs || [])) {
+      const d = m.meta || {};
+      key += '|' + m.id + ':' + m.kind + ':' + (m.collapsed ? 1 : 0) + ':' + (m.content || '') +
+        ':' + (d.status || '') + (d.decision || '') + (d.note || '') + ':' + (d.chunks || 0) +
+        ':' + (d.duration || '') + ':' + (d.toolKind || '') + ':' + (d.stream ? 1 : 0);
+    }
+    return key;
+  }
 
+  let lastTimelineKey = '';
+
+  function renderTimeline() {
+    const task = activeTask();
+    const key = timelineKey(task);
+    if (key === lastTimelineKey) return;
+    lastTimelineKey = key;
+    const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48;
+    const previousTop = timeline.scrollTop;
+    timeline.innerHTML = '';
     if (!task) {
       timelineHeader.hidden = true;
       const empty = document.createElement('div');
@@ -353,7 +406,8 @@
     for (const m of ordered) {
       timeline.appendChild(renderMessage(m));
     }
-    timeline.scrollTop = timeline.scrollHeight;
+    if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+    else timeline.scrollTop = previousTop;
   }
 
   function chevron(m) {
@@ -462,6 +516,30 @@
         break;
       }
 
+      case 'approval': {
+        const pending = meta.status === 'pending';
+        const expired = meta.status === 'expired';
+        const risk = meta.risk || 'medium';
+        const riskClass = risk === 'high' ? 'failed' : risk === 'medium' ? 'running' : 'complete';
+        const cmd = meta.command || meta.action || 'action';
+        wrap.innerHTML = `
+          <div class="message-card">
+            <div class="message-header">
+              <div class="message-avatar agent tool-avatar">⚠</div>
+              <span class="message-author agent">${escapeHtml(m.author)}</span>
+              <span class="action-label">${escapeHtml(meta.action || 'Approval requested')}</span>
+              <span class="message-status ${riskClass}">${escapeHtml(risk)} risk</span>
+              <span class="message-time">${time}</span>
+            </div>
+            <div class="message-body mono-body">${escapeHtml(cmd)}</div>
+            ${meta.reason ? `<div class="message-body muted">${escapeHtml(meta.reason)}</div>` : ''}
+            <div class="approval-actions">
+              ${pending ? APPROVAL_DECISIONS.map(([key, label]) => `<button class="quiet-button approval-btn${key.startsWith('reject') ? ' reject' : ''}" type="button" data-decision="${key}">${label}</button>`).join('') : `<span class="message-status ${expired ? 'failed' : (String(meta.decision || '').startsWith('allow') ? 'complete' : 'failed')}">${escapeHtml(expired ? 'not used · ' + (meta.note || EXPIRED_ENDED) : 'answer sent · ' + decisionLabel(meta.decision))}</span>`}
+            </div>
+          </div>`;
+        break;
+      }
+
       case 'result':
       default: {
         const streaming = !!meta.stream;
@@ -508,6 +586,14 @@
     if (reviewBtn) {
       reviewBtn.addEventListener('click', () => openDiff(m));
     }
+
+    // Approval answers
+    wrap.querySelectorAll('.approval-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const t = activeTask();
+        if (t) answerApproval(t, meta.approvalId, btn.dataset.decision);
+      });
+    });
 
     return wrap;
   }
@@ -709,10 +795,9 @@
       setContextValue('sources-value', 'No task sources', false);
     }
 
-    // Attention badge
-    const attentionCount = task ? task.msgs.filter((m) =>
-      (m.kind === 'result' && /error|fail|attention/i.test(m.content || '')) ||
-      (m.kind === 'action' && m.meta && m.meta.status === 'Failed')).length : 0;
+    // Attention badge: tasks blocked on the user (pending approvals) or failed,
+    // across every workspace — not just the open task's error text.
+    const attentionCount = state.tasks.filter(taskNeedsAttention).length;
     if (attentionBadge) {
       attentionBadge.textContent = attentionCount;
       attentionBadge.hidden = attentionCount === 0;
@@ -832,7 +917,7 @@
 
   // ── Backend conversation helpers ───────────────────────────────────────────
   async function createBackendTask(task, prompt) {
-    const resp = await fetch(apiBase + '/api/tasks', {
+    const resp = await apiFetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -844,12 +929,12 @@
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const agentTask = await resp.json();
     task.backendId = agentTask.id;
-    const startResp = await fetch(apiBase + '/api/tasks/' + encodeURIComponent(agentTask.id) + '/start', { method: 'POST' });
+    const startResp = await apiFetch('/api/tasks/' + encodeURIComponent(agentTask.id) + '/start', { method: 'POST' });
     if (!startResp.ok) throw new Error('HTTP ' + startResp.status);
   }
 
   function postBackendMessage(backendId, prompt) {
-    return fetch(apiBase + '/api/tasks/' + encodeURIComponent(backendId) + '/messages', {
+    return apiFetch('/api/tasks/' + encodeURIComponent(backendId) + '/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -859,6 +944,148 @@
         permissions: PERM_MODES[permissionMode].flags,
       }),
     });
+  }
+
+  // ── Core supervised loop (/api/agent/*): the only backend that gates tools ──
+  // The Rust fennec-agent backend is a thin chat/event server with no approval
+  // gate; the Python core runs the supervised loop and asks before gated calls.
+  // Detect which one apiBase points at so approvals (and My Attention) are real.
+  let backendKind = null;
+  async function probeBackendKind() {
+    if (backendKind) return backendKind;
+    try {
+      const r = await apiFetch('/api/health');
+      const j = await r.json();
+      backendKind = (j && j.app) ? 'core' : 'rust';
+    } catch (_) { backendKind = 'rust'; }
+    return backendKind;
+  }
+
+  async function startCoreTask(task, prompt) {
+    const ws = activeWorkspace();
+    const folder = (ws && Array.isArray(ws.source_folders) && ws.source_folders[0]) || '.';
+    const flags = permissionMode === 'full'
+      ? { allow_write: true, allow_shell: true, allow_web: true }
+      : permissionMode === 'auto'
+        ? { allow_write: true, allow_shell: true, allow_web: false }
+        : { allow_write: false, allow_shell: false, allow_web: false };
+    const resp = await apiFetch('/api/agent/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: prompt, workspace: folder, ...flags,
+        require_approval: permissionMode === 'ask', max_steps: 14,
+      }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const j = await resp.json();
+    task.backendId = j.id;
+    task.core = true;
+  }
+
+  function coreStreamMsg(task) {
+    let m = task.msgs.find((x) => x.kind === 'result' && x.meta && x.meta.coreStream);
+    if (!m) {
+      m = pushMsg(task, { author: 'Fennec', content: '', kind: 'result', collapsed: false, meta: { coreStream: true, stream: true } });
+    }
+    return m;
+  }
+
+  function applyCoreStep(task, s, thinkId) {
+    const kind = s.type;
+    if (kind === 'partial') {
+      const m = coreStreamMsg(task);
+      m.content += (s.content || '');
+      if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+    } else if (kind === 'assistant' || kind === 'final') {
+      const m = coreStreamMsg(task);
+      m.content = s.content || m.content;
+      if (kind === 'final') m.meta.stream = false;
+      if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+    } else if (kind === 'plan') {
+      const text = (s.entries || []).map((e) => (e.status === 'completed' ? '✓ ' : '• ') + e.content).join('\n');
+      let m = task.msgs.find((x) => x.kind === 'think' && x.meta && x.meta.corePlan);
+      if (!m) m = pushMsg(task, { author: 'Fennec', content: text, kind: 'think', collapsed: true, meta: { corePlan: true } });
+      else m.content = text;
+    } else if (kind === 'tool_start') {
+      const id = s.id || s.call_id || s.name;
+      if (!task.msgs.some((x) => x.meta && x.meta.toolId === id)) {
+        pushMsg(task, {
+          author: 'Fennec', content: '', kind: 'action', collapsed: true,
+          meta: { toolId: id, toolKind: s.name, title: s.name, status: 'Running' },
+        });
+      }
+    } else if (kind === 'tool') {
+      const id = s.id || s.call_id || s.name;
+      const m = task.msgs.find((x) => x.meta && x.meta.toolId === id);
+      const status = s.ok ? 'Complete' : 'Failed';
+      if (m) { m.meta.status = status; m.content = s.output || s.error || ''; }
+      else pushMsg(task, { author: 'Fennec', content: s.output || s.error || '', kind: 'action', collapsed: true, meta: { toolId: id, toolKind: s.name, title: s.name, status } });
+    } else if (kind === 'approval_required') {
+      const id = s.approval_id;
+      if (!task.approvals) task.approvals = [];
+      if (!task.approvals.some((x) => x.id === id)) {
+        const args = s.args || {};
+        const rec = {
+          id, action: s.name || 'action',
+          command: args.command || args.filename || args.path || null,
+          reason: s.reason || '', risk: s.risk || 'medium',
+          status: 'pending', decision: null,
+        };
+        task.approvals.push(rec);
+        task.status = 'WaitingForApproval';
+        pushMsg(task, {
+          author: 'Fennec', content: rec.command || rec.action, kind: 'approval', collapsed: false,
+          meta: { approvalId: id, action: rec.action, command: rec.command, reason: rec.reason, risk: rec.risk, status: 'pending', decision: null },
+        });
+      }
+    } else if (kind === 'error') {
+      pushMsg(task, { author: 'Fennec', content: s.content || 'Task error.', kind: 'result', collapsed: false });
+    } else if (kind === 'cancelled') {
+      pushMsg(task, { author: 'Fennec', content: 'Task cancelled.', kind: 'result', collapsed: false });
+    }
+  }
+
+  async function pollCore(task, thinkId) {
+    if (task.polling) return;
+    task.polling = true;
+    let after = 0;
+    let attempts = 0;
+    while (attempts < POLL_MAX_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      if (state.tasks.indexOf(task) === -1) { task.polling = false; return; }
+      let j = null;
+      try {
+        const r = await apiFetch('/api/agent/poll?id=' + encodeURIComponent(task.backendId) + '&after=' + after);
+        if (!r.ok) break;
+        j = await r.json();
+      } catch (_) { break; }
+      after = j.total != null ? j.total : after + (j.steps || []).length;
+      for (const s of (j.steps || [])) applyCoreStep(task, s, thinkId);
+      const live = j.pending || [];
+      // A question the loop dropped was answered in another window or timed out
+      // in the loop itself; either way it is no longer ours to answer, exactly
+      // as the native lane treats it (gui_main.rs CoreEvent::Pending).
+      expireApprovals(task, EXPIRED_GONE, live);
+      if (live.length) task.status = 'WaitingForApproval';
+      else if (task.status === 'WaitingForApproval') task.status = 'Running';
+      saveState();
+      scheduleRender();
+      const st = j.status;
+      if (st && st !== 'running') {
+        task.status = st === 'done' ? 'Complete' : st === 'cancelled' ? 'Cancelled' : 'Failed';
+        finalizeTask(task);
+        return;
+      }
+      // Blocked on the user is not slow: don't let the timeout kill it.
+      if (live.length) attempts = 0; else attempts++;
+    }
+    if (task.status === 'Running' || task.status === 'WaitingForApproval') {
+      pushMsg(task, { author: 'Fennec', content: 'Response timed out.', kind: 'result', collapsed: false });
+      task.status = 'Failed';
+      finalizeTask(task);
+    }
+    task.polling = false;
   }
 
   // ── Send message ───────────────────────────────────────────────────────────
@@ -931,19 +1158,27 @@
     renderAll();
 
     try {
-      // Reuse the conversation's backend task so the engine keeps full history.
-      if (!task.backendId) await createBackendTask(task, prompt);
-      let msgResp = await postBackendMessage(task.backendId, prompt);
-      if (msgResp.status === 404) {
-        // Backend restarted and lost the task — recreate it.
-        task.backendId = null;
-        await createBackendTask(task, prompt);
-        msgResp = await postBackendMessage(task.backendId, prompt);
+      const kind = await probeBackendKind();
+      if (kind === 'core') {
+        // Supervised loop: gates tools and asks before protected calls, so
+        // approvals (and the My Attention list) are real.
+        await startCoreTask(task, prompt);
+        saveState();
+        pollCore(task, think.id);
+      } else {
+        // Reuse the conversation's backend task so the engine keeps full history.
+        if (!task.backendId) await createBackendTask(task, prompt);
+        let msgResp = await postBackendMessage(task.backendId, prompt);
+        if (msgResp.status === 404) {
+          // Backend restarted and lost the task — recreate it.
+          task.backendId = null;
+          await createBackendTask(task, prompt);
+          msgResp = await postBackendMessage(task.backendId, prompt);
+        }
+        if (!msgResp.ok) throw new Error('HTTP ' + msgResp.status);
+        saveState();
+        pollTask(task, think.id);
       }
-      if (!msgResp.ok) throw new Error('HTTP ' + msgResp.status);
-
-      saveState();
-      pollTask(task, think.id);
     } catch (e) {
       debugLog('send failed', e);
       task.msgs = task.msgs.filter((m) => m.id !== think.id);
@@ -1037,6 +1272,39 @@
       });
     }
 
+    // Approvals → pending cards + resolved record (survives reload / poll).
+    if (!task.approvals) task.approvals = [];
+    for (const ba of (bt.approvals || [])) {
+      const resolved = !!ba.resolved;
+      const decision = resolved ? (ba.resolved.choice_id || ba.resolved.decision || null) : null;
+      let rec = task.approvals.find((x) => x.id === ba.id);
+      if (!rec) {
+        rec = {
+          id: ba.id, action: ba.action || 'action', command: ba.command || null,
+          reason: ba.reason || '', risk: ba.risk_level || 'medium',
+          status: resolved ? 'resolved' : 'pending', decision,
+        };
+        task.approvals.push(rec);
+      } else if (resolved && rec.status === 'pending') {
+        rec.status = 'resolved';
+        rec.decision = decision;
+      }
+      if (!task.msgs.some((m) => m.meta && m.meta.approvalId === ba.id)) {
+        pushMsg(task, {
+          author: 'Fennec', content: rec.command || rec.action,
+          kind: 'approval', collapsed: false,
+          ts: Date.parse(ba.created_at) || Date.now(),
+          meta: {
+            approvalId: ba.id, action: rec.action, command: rec.command,
+            reason: rec.reason, risk: rec.risk, status: rec.status, decision: rec.decision,
+          },
+        });
+      } else {
+        const m = task.msgs.find((x) => x.meta && x.meta.approvalId === ba.id);
+        if (m) { m.meta.status = rec.status; m.meta.decision = rec.decision; }
+      }
+    }
+
     task.msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
     if (bt.status) task.status = bt.status;
   }
@@ -1049,6 +1317,9 @@
     for (const m of task.msgs) {
       if (m.meta && m.meta.stream) m.meta.stream = false;
     }
+    // A run that ended without an answer leaves its approvals expired, not
+    // pending forever in My Attention.
+    expireApprovals(task, EXPIRED_ENDED);
     task.polling = false;
     saveState();
     renderAll();
@@ -1065,10 +1336,10 @@
     while (attempts < POLL_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       if (state.tasks.indexOf(task) === -1) { task.polling = false; return; } // deleted
-      if (task.status !== 'Running' && task.status !== 'Planning') { task.polling = false; return; } // stopped elsewhere
+      if (task.status !== 'Running' && task.status !== 'Planning' && task.status !== 'WaitingForApproval') { task.polling = false; return; } // stopped elsewhere
       let bt = null;
       try {
-        const pollResp = await fetch(apiBase + '/api/tasks/' + encodeURIComponent(task.backendId));
+        const pollResp = await apiFetch('/api/tasks/' + encodeURIComponent(task.backendId));
         if (!pollResp.ok) break;
         bt = await pollResp.json();
       } catch (_) { break; }
@@ -1082,7 +1353,9 @@
         finalizeTask(task);
         return;
       }
-      attempts++;
+      // A run blocked on the user is not slow: don't let the timeout kill it.
+      if (bt.status === 'WaitingForApproval') attempts = 0;
+      else attempts++;
     }
 
     // Timed out or backend unreachable.
@@ -1104,7 +1377,7 @@
     if (!task || !isWorking()) return;
     if (task.backendId) {
       try {
-        await fetch(apiBase + '/api/tasks/' + encodeURIComponent(task.backendId) + '/stop', { method: 'POST' });
+        await apiFetch('/api/tasks/' + encodeURIComponent(task.backendId) + '/stop', { method: 'POST' });
       } catch (_) { /* offline — cancel locally */ }
     }
     task.status = 'Cancelled';
@@ -1171,7 +1444,7 @@
         const s = String(ev.status || '').toLowerCase();
         if (s === 'complete' || s === 'cancelled' || s === 'failed') {
           if (task.status === 'Running' || task.status === 'Planning') {
-            fetch(apiBase + '/api/tasks/' + encodeURIComponent(task.backendId))
+            apiFetch('/api/tasks/' + encodeURIComponent(task.backendId))
               .then((r) => (r.ok ? r.json() : null))
               .then((bt) => {
                 if (bt) syncBackend(task, bt);
@@ -1266,11 +1539,30 @@
 
       case 'ApprovalRequested': {
         if (!task) return;
+        const a = payload.approval || payload;
+        const id = a.approval_id || a.id || ev.event_id;
+        if (!task.approvals) task.approvals = [];
+        if (task.approvals.some((x) => x.id === id)) break;
+        const args = a.args || {};
+        const record = {
+          id,
+          action: a.action || a.name || 'action',
+          command: a.command || args.command || args.filename || args.path || null,
+          reason: a.reason || '',
+          risk: a.risk_level || a.risk || 'medium',
+          status: 'pending',
+          decision: null,
+        };
+        task.approvals.push(record);
+        task.status = 'WaitingForApproval';
         pushMsg(task, {
-          author: 'Fennec',
-          content: '⚠ Approval requested: ' + (payload.action || 'action') + '\n' + (payload.reason || '') +
-            (payload.command ? '\nCommand: ' + payload.command : ''),
-          kind: 'result', collapsed: false,
+          author: ev.agent_identity || 'Fennec',
+          content: record.command || record.action,
+          kind: 'approval', collapsed: false,
+          meta: {
+            approvalId: id, action: record.action, command: record.command,
+            reason: record.reason, risk: record.risk, status: 'pending', decision: null,
+          },
         });
         saveState();
         scheduleRender();
@@ -1305,24 +1597,17 @@
       case 'new-task':
         state.activeId = null;
         state.queued = [];
+        state.attentionOnly = false;
         saveState();
         renderAll();
         composerInput.focus();
         break;
       case 'attention': {
-        const task = activeTask();
-        if (task) {
-          const ordered = task.msgs.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-          const idx = ordered.findIndex((m) =>
-            (m.kind === 'result' && /error|fail|attention/i.test(m.content || '')) ||
-            (m.kind === 'action' && m.meta && m.meta.status === 'Failed'));
-          if (idx >= 0) {
-            const msgs = timeline.querySelectorAll('.message');
-            if (msgs[idx]) msgs[idx].scrollIntoView({ behavior: 'smooth' });
-          } else {
-            toast('Nothing needs your attention.', 'info');
-          }
-        }
+        state.attentionOnly = !state.attentionOnly;
+        document.querySelectorAll('.nav-item').forEach((el) => el.classList.remove('active'));
+        const target = document.querySelector(`[data-nav="${state.attentionOnly ? 'attention' : 'coding'}"]`);
+        if (target) target.classList.add('active');
+        renderAll();
         break;
       }
       case 'search':
@@ -1365,7 +1650,9 @@
 
   async function checkHealth() {
     try {
-      const resp = await fetch(apiBase + '/health');
+      // /api/health is the one route both backends answer; /health is Rust-only,
+      // so probing it read a running core as offline.
+      const resp = await apiFetch('/api/health');
       state.backendConnected = resp.ok;
     } catch (_) {
       state.backendConnected = false;
@@ -1383,7 +1670,7 @@
 
   async function loadModels() {
     try {
-      const resp = await fetch(apiBase + '/api/models');
+      const resp = await apiFetch('/api/models');
       if (resp.ok) {
         const data = await resp.json();
         const list = Array.isArray(data) ? data : Array.isArray(data.models) ? data.models : null;
@@ -1494,11 +1781,83 @@
     if (timelineRepo) timelineRepo.textContent = ((task && task.repo) || (ws ? ws.name : 'local')) + ' · main';
   }
 
+  // ── My Attention: pending approvals + answered commands ───────────────────
+  function taskNeedsAttention(t) {
+    return t.status === 'WaitingForApproval' || t.status === 'AwaitingApproval' || t.status === 'NeedsAttention' ||
+      (t.approvals || []).some((a) => a.status === 'pending');
+  }
+
+  function approvedCommands() {
+    const out = [];
+    for (const t of state.tasks) {
+      for (const a of (t.approvals || [])) {
+        if (a.status === 'resolved') out.push({ task: t, approval: a });
+      }
+    }
+    return out;
+  }
+
+  // The four answers the core loop accepts (fennec_core/loop.py:_APPROVAL_OPTIONS),
+  // worded as the desktop shells word them (fennec-ui/src/attention.rs) so the
+  // same answer reads the same on every surface.
+  const APPROVAL_DECISIONS = [
+    ['allow_once', 'Allow once'],
+    ['allow_always', 'Allow every time'],
+    ['reject_once', 'Reject'],
+    ['reject_always', 'Reject and stop asking'],
+  ];
+
+  function decisionLabel(d) {
+    const hit = APPROVAL_DECISIONS.find(([key]) => key === d);
+    return hit ? hit[1] : (d || 'answered');
+  }
+
+  function answerApproval(task, approvalId, decision) {
+    const a = (task.approvals || []).find((x) => x.id === approvalId);
+    if (!a || a.status !== 'pending') return;
+    if (!task.backendId) { toast('No backend session to answer.', 'warn'); return; }
+    apiFetch('/api/agent/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: task.backendId, approval_id: approvalId, decision }),
+    }).then((r) => {
+      if (r.status === 404) {
+        // The loop only answers a question it still holds; a 404 means this one
+        // was already dropped, so the card must stop asking instead of sitting
+        // in My Attention forever.
+        a.status = 'expired';
+        a.note = EXPIRED_GONE;
+        const dead = task.msgs.find((x) => x.meta && x.meta.approvalId === approvalId);
+        if (dead) { dead.meta.status = 'expired'; dead.meta.note = EXPIRED_GONE; }
+        saveState();
+        renderAll();
+        throw new Error(EXPIRED_GONE);
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(() => {
+      a.status = 'resolved';
+      a.decision = decision;
+      const m = task.msgs.find((x) => x.meta && x.meta.approvalId === approvalId);
+      if (m) { m.meta.status = 'resolved'; m.meta.decision = decision; }
+      if (task.status === 'WaitingForApproval') task.status = 'Running';
+      saveState();
+      renderAll();
+      toast(decision.startsWith('allow') ? 'Command approved.' : 'Command rejected.', 'good');
+    }).catch((e) => {
+      if (a.status !== 'expired') toast('Could not send answer: ' + e.message, 'warn');
+      else toast('Answer did not land — ' + EXPIRED_GONE, 'warn');
+    });
+  }
+
   function renderWorkspaces() {
     const list = $('workspace-list');
     if (!list) return;
+    const focusKey = document.activeElement instanceof HTMLElement
+      ? document.activeElement.dataset.focus : null;
     list.innerHTML = '';
-    const shown = filteredTasks();
+    let shown = filteredTasks();
+    if (state.attentionOnly) shown = shown.filter(taskNeedsAttention);
     const q = state.searchQuery.trim().toLowerCase();
 
     const appendTasks = (ul, tasks) => {
@@ -1537,7 +1896,9 @@
     });
 
     const unfiled = shown.filter((t) => !t.workspaceId || !workspaces.some((w) => w.id === t.workspaceId));
-    if (unfiled.length > 0 || (!q && shown.length === 0)) {
+    // In the attention view an empty Unfiled group would claim there are no
+    // tasks at all; the "Approved commands" section below is the real content.
+    if (unfiled.length > 0 || (!q && shown.length === 0 && !state.attentionOnly)) {
       const li = document.createElement('li');
       li.className = 'workspace-item unfiled';
       li.innerHTML = `
@@ -1558,6 +1919,64 @@
       list.appendChild(li);
     }
 
+    // My Attention: the commands the user has already answered, newest last.
+    if (state.attentionOnly) {
+      const approved = approvedCommands();
+      const li = document.createElement('li');
+      li.className = 'workspace-item unfiled';
+      li.innerHTML = `
+        <div class="workspace-row">
+          <span class="workspace-icon">✅</span>
+          <span class="workspace-label">Approved commands</span>
+        </div>`;
+      const ul = document.createElement('ul');
+      ul.className = 'workspace-tasks';
+      for (const { task, approval } of approved) {
+        const row = document.createElement('li');
+        row.className = 'task-item approved-command';
+        row.tabIndex = 0;
+        row.dataset.focus = 'cmd:' + task.id + ':' + (approval.id || '');
+        row.setAttribute('role', 'button');
+        row.setAttribute('aria-label', 'Go to task: ' + (task.title || 'untitled'));
+        const cmd = approval.command || approval.action || 'action';
+        // The dot carries the risk the gate reported (as the desktop rail does);
+        // the decision word says allow or reject.
+        const risk = approval.risk || 'unknown';
+        const riskClass = risk === 'high' ? 'failed' : risk === 'medium' ? 'running' : risk === 'low' ? 'complete' : 'idle';
+        row.innerHTML = `
+          <div class="task-item-main">
+            <div class="task-item-title">${escapeHtml(cmd)}</div>
+            <div class="task-item-meta">
+              <span class="task-status-dot ${riskClass}"></span>
+              <span>${escapeHtml(decisionLabel(approval.decision))}</span>
+              <span>·</span>
+              <span>${escapeHtml(task.title || '')}</span>
+            </div>
+          </div>`;
+        const jump = () => { switchTask(task.id); };
+        row.addEventListener('click', jump);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(); }
+        });
+        ul.appendChild(row);
+      }
+      if (approved.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'task-empty';
+        empty.textContent = 'No answered commands yet.';
+        ul.appendChild(empty);
+      }
+      li.appendChild(ul);
+      list.appendChild(li);
+
+      if (shown.length === 0 && approved.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'task-empty';
+        empty.textContent = 'Nothing needs your attention.';
+        list.appendChild(empty);
+      }
+    }
+
     list.querySelectorAll('.workspace-delete').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1568,6 +1987,14 @@
         saveWorkspaces();
       });
     });
+
+    // The list is rebuilt on every render, so activating a row with the keyboard
+    // would throw focus to the document and send Tab back to the top of the page.
+    if (focusKey) {
+      const keep = Array.from(list.querySelectorAll('[data-focus]'))
+        .find((el) => el.dataset.focus === focusKey);
+      if (keep) keep.focus();
+    }
   }
 
   // ── Workspace creation dialog (parity with the native gpui dialog) ─────────
@@ -1666,7 +2093,7 @@
 
   async function syncBackendRepositories() {
     try {
-      const resp = await fetch(apiBase + '/api/repositories');
+      const resp = await apiFetch('/api/repositories');
       if (!resp.ok) return;
       const repos = await resp.json();
       if (!Array.isArray(repos)) return;
@@ -1685,7 +2112,7 @@
   // ── Settings dialog wiring ─────────────────────────────────────────────────
   function applyTheme(theme) {
     const themes = {
-      dark: { bg: '#15120F', panel: '#1B1714', surface: '#28211A', text: '#F2EEE8' },
+      dark: { bg: '#141414', panel: '#191919', surface: '#1F1F1F', text: '#EDEDED' },
       light: { bg: '#FFFFFF', panel: '#F5F5F5', surface: '#E8E8E8', text: '#1A1A1A' },
       ocean: { bg: '#0A1929', panel: '#0D2137', surface: '#132F4C', text: '#E0F2FE' },
       forest: { bg: '#0F1F0F', panel: '#1A2E1A', surface: '#253D25', text: '#E8F5E9' },
@@ -1761,6 +2188,7 @@
       }
       errEl.hidden = true;
       apiBase = url;
+      backendKind = null;
       localStorage.setItem('fennec-server-url', apiBase);
       localStorage.setItem('fennec-engine-url', $('engine-url').value.trim());
       localStorage.setItem('fennec-access-token', $('access-token').value);
@@ -1953,9 +2381,9 @@
 
   // Resume interrupted tasks after reload.
   for (const t of state.tasks) {
-    if (t.status === 'Running' || t.status === 'Planning') {
+    if (LIVE_STATUSES.indexOf(t.status) !== -1) {
       if (t.backendId) {
-        pollTask(t);
+        if (t.core) pollCore(t); else pollTask(t);
       } else {
         t.status = 'Failed';
         t.msgs = t.msgs.filter((m) => !(m.kind === 'think' && m.meta && m.meta.stream));
