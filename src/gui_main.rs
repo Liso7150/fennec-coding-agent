@@ -1360,9 +1360,10 @@ impl App {
                                 .when(is_active, |d| d.bg(t.muted))
                                 .hover(|d| d.bg(t.muted))
                                 .on_click(cx.listener(move |a, _, _, cx| { a.select_task(id); cx.notify(); }))
-                                .child(div().flex().items_center().justify_between()
-                                    .child(Label::new(title.as_str()).text_size(px(12.0)).truncate())
-                                    .child(div().flex().items_center().gap_1()
+                                .child(div().flex().items_center().justify_between().gap_1()
+                                    .child(div().flex_1().overflow_hidden()
+                                        .child(Label::new(title.as_str()).text_size(px(12.0)).truncate()))
+                                    .child(div().flex().items_center().gap_1().flex_shrink_0()
                                         .when(has_warning, |d| d
                                             .child(Label::new("⚠").text_size(px(11.0)).text_color(t.red)))
                                         .child(Button::new(format!("task-rename-{}", id)).label("✎").w(px(16.0)).h(px(16.0)).rounded_sm()
