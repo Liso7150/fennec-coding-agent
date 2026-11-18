@@ -1,6 +1,11 @@
 use fennec_client::coding_agent::CodingAgentClient;
+use fennec_client::Core;
 
-use fennec_ui::markdown::{artifact_kind, rich_div};
+use fennec_ui::attention::{
+    ApprovalCard, ApprovedCommand, CardState, approval_card, approved_commands_panel,
+    attention_badge, needs_attention,
+};
+use fennec_ui::markdown::{attachment_subtitle, rich_div};
 use fennec_ui::theme::{find_preset_index, theme_presets};
 use fennec_ui::widgets::{action_card, ai_header, attachment_card, composer_dock, composer_toolbar, edit_card, queue_strip, speak_tts, user_bubble};
 use fennec_ui::workspace_dialog::open_workspace_dialog;
@@ -47,6 +52,16 @@ struct MsgMeta {
     del: Option<usize>,
     path: Option<String>,
     size: Option<String>,
+    /// What a delivered file's call did to it: `created` or `updated`. Only
+    /// files the run itself wrote carry one — a file the user attached has no
+    /// verb, so the run's closing summary can tell the two apart.
+    #[serde(default)]
+    verb: Option<String>,
+    /// The absolute directory the run was jailed to, recorded when a file was
+    /// delivered. `path` is relative to it, so this is what turns a delivered
+    /// path back into a real file.
+    #[serde(default)]
+    root: Option<String>,
 }
 
 #[derive(Clone)]
@@ -56,6 +71,8 @@ struct Toast {
     at: std::time::Instant,
 }
 
+/// One gated call the agent loop stopped on. Written from the core's
+/// `approval_required` step, so every field is a word the loop itself chose.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct ApprovalRequest {
     id: String,
@@ -63,6 +80,21 @@ struct ApprovalRequest {
     risk_level: String,
     command: Option<String>,
     resolved: Option<ApprovalResolution>,
+    /// The tool table's own badge (`CMD`, `EDIT`, `READ`, …).
+    #[serde(default)]
+    category: String,
+    /// Why the gate stopped the run, in the loop's words.
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    path: Option<String>,
+    /// The question is no longer live: the run ended, or the loop's own timeout
+    /// refused the call while nobody answered. That is not the same as the user
+    /// not having answered, and the card has to say which it is.
+    #[serde(default)]
+    expired: bool,
+    #[serde(default)]
+    note: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -83,6 +115,10 @@ struct Task {
     started_at: Option<i64>,
     #[serde(default)]
     approvals: Vec<ApprovalRequest>,
+    /// The supervised session this run belongs to on the agent loop
+    /// (`/api/agent/*`). Only a run with one can be answered or cancelled.
+    #[serde(default)]
+    core_sid: Option<String>,
     #[serde(default)]
     workspace_id: Option<String>,
 }
@@ -177,6 +213,13 @@ struct App {
     ask_each: bool,
     settings_path: PathBuf,
     backend_ok: bool,
+    /// The Python agent loop (`fennec-agent serve`) on the same URL. It is the
+    /// only backend that gates a tool call, so the approval rail and the answer
+    /// buttons exist solely on this lane.
+    core: Core,
+    core_up: bool,
+    /// The directory the loop will accept a task for; anything else is a 403.
+    core_root: String,
     agents: Vec<String>,
     path: PathBuf,
     next_id: u64,
@@ -206,8 +249,40 @@ enum BackendResponse {
     ActionDone { tool_id: String, duration: Option<String>, detail: String },
     Complete { task_id: u64, status: String, final_text: String },
     Failed(String),
-    BackendInfo { names: Vec<String>, healthy: bool },
+    BackendInfo { names: Vec<String> },
+    /// Which service answers on `server_url`, re-probed every couple of seconds
+    /// and reported only when it changed.
+    ServeState { core_up: bool, core_root: String, axum: bool },
+    Core(CoreEvent),
     Stt(String),
+}
+
+/// One thing a supervised core run did, translated off the UI thread.
+#[derive(Debug)]
+enum CoreEvent {
+    /// `/api/agent/start` answered with the session id this run is polled by.
+    Started { task_id: u64, sid: String },
+    /// The loop's own reasoning, and its answer to the user.
+    Reasoning { task_id: u64, text: String },
+    Answer { task_id: u64, text: String },
+    /// A tool call: opened by `tool_start`, closed by the `tool` step that
+    /// carries the result. `ok` is `None` while it is still running.
+    Tool { task_id: u64, id: String, title: String, detail: String, ok: Option<bool>, output: String },
+    /// A file the run put on disk, delivered to the user as its own card. Only
+    /// `write_file` and `edit_file` produce one; a read names a path without
+    /// changing it.
+    Deliver { task_id: u64, name: String, path: String, verb: &'static str, root: String },
+    /// A question the loop stopped on.
+    Approval { task_id: u64, approval: ApprovalRequest },
+    /// What happened to an answer this window sent: `error` is the loop's own
+    /// refusal, which means the question was no longer live.
+    Answered { task_id: u64, approval_id: String, decision: String, error: Option<String> },
+    /// The approval ids the loop still holds; anything else can no longer be
+    /// answered, which is not the same as unanswered.
+    Pending { task_id: u64, ids: Vec<String> },
+    Status { task_id: u64, status: String },
+    /// The run could not be started, or stopped being pollable.
+    Refused { task_id: u64, error: String },
 }
 
 impl App {
@@ -270,6 +345,8 @@ impl App {
         let allow_shell = settings.allow_shell.unwrap_or(false);
         let allow_web = settings.allow_web.unwrap_or(false);
         let ask_each = settings.ask_each.unwrap_or(false);
+        // Both backends listen on the same port, so the core lane shares this URL.
+        let core_base = server_url.clone();
 
         let mut app = Self {
             tasks: vec![], active: None, queued: vec![], inspector: true,
@@ -284,7 +361,9 @@ impl App {
             stt_stream: None,
             composer_restore: None,
             allow_write, allow_shell, allow_web, ask_each,
-            settings_path: settings_path.clone(), backend_ok: false, agents: vec![],
+            settings_path: settings_path.clone(), backend_ok: false,
+            core: Core { base: core_base }, core_up: false, core_root: String::new(),
+            agents: vec![],
             path, next_id: 1, response_rx: rx, response_tx: tx,
             pending_think: None, pending_content: None, tools: std::collections::HashMap::new(),
             _task, scroll_handle: ScrollHandle::new(), line: String::new(), toasts: Vec::new(), pending_send: None,
@@ -293,7 +372,38 @@ impl App {
         };
         app.load_workspaces();
         app.fetch_backend_info();
+        app.watch_service();
         app
+    }
+
+    /// One URL can hold either Fennec backend, and they offer different things:
+    /// the Rust one streams chat and gates nothing, the Python agent loop gates
+    /// every write and asks. `/api/health` says which is answering — only the
+    /// loop's payload carries `app` — and the answer is re-checked because a
+    /// service started after this window still has to light up the rail.
+    fn watch_service(&self) {
+        let tx = self.response_tx.clone();
+        let base = self.core.base.clone();
+        std::thread::spawn(move || {
+            let core = Core { base };
+            let mut last: Option<(bool, String, bool)> = None;
+            loop {
+                let health = core.health();
+                let state = match &health {
+                    Some(h) if h["app"].is_string() =>
+                        (true, h["workspace"].as_str().unwrap_or("").to_string(), false),
+                    Some(_) => (false, String::new(), true),
+                    None => (false, String::new(), false),
+                };
+                if last.as_ref() != Some(&state) {
+                    let _ = tx.send(BackendResponse::ServeState {
+                        core_up: state.0, core_root: state.1.clone(), axum: state.2,
+                    });
+                    last = Some(state);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2000));
+            }
+        });
     }
 
     fn load(&mut self) {
@@ -449,15 +559,10 @@ impl App {
         let tx = self.response_tx.clone();
         std::thread::spawn(move || {
             let client = CodingAgentClient::with_base(url);
-            let healthy = client.health().is_some();
-            let names = if healthy {
-                client.list_agents().iter()
-                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-                    .collect()
-            } else {
-                vec![]
-            };
-            let _ = tx.send(BackendResponse::BackendInfo { names, healthy });
+            let names = client.list_agents().iter()
+                .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                .collect();
+            let _ = tx.send(BackendResponse::BackendInfo { names });
         });
     }
 
@@ -469,11 +574,19 @@ impl App {
                     self.line = String::new();
                     if !text.is_empty() { self.composer_restore = Some(text); }
                 }
-                BackendResponse::BackendInfo { names, healthy } => {
+                BackendResponse::BackendInfo { names } => {
                     self.agents = names;
-                    self.backend_ok = healthy;
+                }
+                BackendResponse::ServeState { core_up, core_root, axum } => {
+                    self.core_up = core_up;
+                    self.core_root = core_root;
+                    // Either service answering means the composer can send;
+                    // which one decides where the prompt goes.
+                    self.backend_ok = axum || core_up;
+                    if axum { self.fetch_backend_info(); }
                     self.flush_warm_queue();
                 }
+                BackendResponse::Core(ev) => self.apply_core(ev, cx),
                 BackendResponse::Offline => {
                     self.finish_think("Backend offline — start `fennec-agent` or set the server URL in Settings.");
                     if let Some((tid, _)) = self.pending_think { self.set_task_status(tid, "Failed"); }
@@ -532,7 +645,7 @@ impl App {
                             kind: MsgKind::Action, time: now(), collapsed: true,
                             meta: Some(MsgMeta {
                                 duration: None, title: Some(title),
-                                add: None, del: None, path: None, size: None,
+                                add: None, del: None, path: None, size: None, verb: None, root: None,
                             }),
                         });
                     }
@@ -541,7 +654,10 @@ impl App {
                 BackendResponse::ActionDone { tool_id, duration, detail } => {
                     if let Some(&(tid, mid)) = self.tools.get(&tool_id) {
                         if let Some(m) = self.msg_mut(tid, mid) {
-                            if let Some(meta) = m.meta.as_mut() { meta.duration = duration; }
+                            // `duration` doubles as the row's done-flag: `None` is
+                            // what makes it read "Running…", so a finished tool
+                            // with no timing still has to be marked Some.
+                            if let Some(meta) = m.meta.as_mut() { meta.duration = Some(duration.unwrap_or_default()); }
                             m.content = detail;
                         }
                     }
@@ -637,7 +753,7 @@ impl App {
         if self.active.is_none() {
             let id = self.next_id;
             self.next_id += 1;
-            self.tasks.push(Task { id, title: "New task".into(), status: "Running".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], workspace_id: self.active_workspace_id.clone() });
+            self.tasks.push(Task { id, title: "New task".into(), status: "Running".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], core_sid: None, workspace_id: self.active_workspace_id.clone() });
             self.active = Some(id);
         }
     }
@@ -660,7 +776,7 @@ impl App {
     fn new_task(&mut self) {
         let id = self.next_id;
         self.next_id += 1;
-        self.tasks.push(Task { id, title: "New task".into(), status: "Idle".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], workspace_id: self.active_workspace_id.clone() });
+        self.tasks.push(Task { id, title: "New task".into(), status: "Idle".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], core_sid: None, workspace_id: self.active_workspace_id.clone() });
         self.active = Some(id);
         self.attention_only = false;
         self.save();
@@ -669,7 +785,7 @@ impl App {
     fn new_task_in_workspace(&mut self, workspace_id: &str) {
         let id = self.next_id;
         self.next_id += 1;
-        self.tasks.push(Task { id, title: "New task".into(), status: "Idle".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], workspace_id: Some(workspace_id.to_string()) });
+        self.tasks.push(Task { id, title: "New task".into(), status: "Idle".into(), repo: "Liso7150/fennec".into(), msgs: vec![], backend_id: None, started_at: None, approvals: vec![], core_sid: None, workspace_id: Some(workspace_id.to_string()) });
         self.active = Some(id);
         self.attention_only = false;
         self.save();
@@ -681,7 +797,11 @@ impl App {
         self.save();
     }
 
-    fn working(&self) -> bool { self.task().map(|t| t.status == "Running").unwrap_or(false) }
+    /// A run stopped on an approval is still this task's turn: the next prompt
+    /// belongs behind it in the warm queue, not in a second concurrent run.
+    fn working(&self) -> bool {
+        self.task().map(|t| matches!(t.status.as_str(), "Running" | "AwaitingApproval")).unwrap_or(false)
+    }
 
     fn elapsed(&self) -> String {
         self.task().and_then(|t| t.started_at).map(|start| {
@@ -741,20 +861,46 @@ impl App {
         out
     }
 
-    fn attention_count(&self) -> usize {
-        self.tasks.iter().filter(|t| t.status == "Running" || t.status == "Failed").count()
+    /// A task is the user's business while it has a question they can still
+    /// answer, or a status that says it stopped to wait for one. An expired
+    /// question is not attention — there is nothing left to do with it.
+    fn task_needs_attention(&self, t: &Task) -> bool {
+        let pending = t.approvals.iter().filter(|a| a.resolved.is_none() && !a.expired).count();
+        needs_attention(&t.status, pending)
     }
 
-    fn approved_commands(&self) -> Vec<(&Task, &ApprovalRequest)> {
+    fn attention_count(&self) -> usize {
+        self.tasks.iter().filter(|t| self.task_needs_attention(t)).count()
+    }
+
+    fn approved_commands(&self) -> Vec<ApprovedCommand> {
         self.tasks.iter()
-            .flat_map(|t| t.approvals.iter().filter(|a| a.resolved.is_some()).map(move |a| (t, a)))
+            .flat_map(|t| t.approvals.iter().filter_map(move |a| {
+                a.resolved.as_ref().map(|r| (t, a, r.choice_id.clone()))
+            }))
+            .map(|(t, a, decision)| ApprovedCommand {
+                task_id: t.id.to_string(),
+                task_title: t.title.clone(),
+                command: a.command.clone().unwrap_or_else(|| a.action.clone()),
+                risk: a.risk_level.clone(),
+                decision,
+            })
             .collect()
+    }
+
+    /// What the rail lists right now. `query_lower` is the search text already
+    /// downcased; My Attention and Search each narrow the list their own way.
+    fn task_shown(&self, t: &Task, query_lower: &str) -> bool {
+        (!self.attention_only || self.task_needs_attention(t))
+            && (query_lower.is_empty()
+                || t.title.to_lowercase().contains(query_lower)
+                || t.repo.to_lowercase().contains(query_lower))
     }
 
     fn filtered_tasks(&self, query: &str) -> Vec<&Task> {
         let q = query.to_lowercase();
         self.tasks.iter()
-            .filter(|t| q.is_empty() || t.title.to_lowercase().contains(&q) || t.repo.to_lowercase().contains(&q))
+            .filter(|t| self.task_shown(t, &q))
             .rev()
             .collect()
     }
@@ -952,6 +1098,7 @@ impl App {
             backend_id: None,
             started_at: Some(chrono::Utc::now().timestamp()),
             approvals: vec![],
+            core_sid: None,
             workspace_id: self.active_workspace_id.clone(),
         });
         self.active = Some(task_id);
@@ -1024,7 +1171,7 @@ impl App {
             kind: MsgKind::Attach, time: now(), collapsed: false,
             meta: Some(MsgMeta {
                 duration: None, title: Some(name), add: None, del: None,
-                path: Some(path.to_string_lossy().to_string()), size: Some(size),
+                path: Some(path.to_string_lossy().to_string()), size: Some(size), verb: None, root: None,
             }),
         }, cx);
     }
@@ -1100,6 +1247,14 @@ impl App {
                     text.push_str(&format!("\n\n[{}]\n{}", name, content));
                 }
             }
+        }
+
+        // The loop is the only backend that gates a call. When it answers on
+        // this URL the prompt goes there, so the cards and the badge have a real
+        // question behind them; the Rust service stays the chat lane.
+        if self.core_up {
+            self.dispatch_core(text, task_id);
+            return;
         }
 
         let url = self.server_url.clone();
@@ -1209,6 +1364,408 @@ impl App {
             }
         });
     }
+
+    /// The directory to hand the loop for the active task. The loop refuses
+    /// (403) anything outside the root it was started with, so a workspace
+    /// folder it cannot reach is not offered — its own root is, which says where
+    /// the run can actually work instead of where a rail shows a picture.
+    fn core_workspace(&self) -> String {
+        let root = self.core_root.trim_end_matches(['\\', '/']).to_string();
+        let folder = self.active_workspace_id.as_ref()
+            .and_then(|id| self.workspaces.iter().find(|w| &w.id == id))
+            .and_then(|w| w.source_folders.first())
+            .map(|s| s.trim_end_matches(['\\', '/']).to_string())
+            .unwrap_or_default();
+        let reachable = !root.is_empty()
+            && folder.to_lowercase().starts_with(&root.to_lowercase());
+        if reachable || root.is_empty() { folder } else { root }
+    }
+
+    /// Start a supervised run on the agent loop and follow it. This is the lane
+    /// that gates: `loop.py` lifts the `allow_*` switches and stops before every
+    /// write, so what admits a call is the answer on the card, not a box ticked
+    /// when the run started.
+    fn dispatch_core(&self, text: String, task_id: u64) {
+        let (core, tx) = (self.core.clone(), self.response_tx.clone());
+        let workspace = self.core_workspace();
+        let (allow_write, allow_shell, allow_web) = (self.allow_write, self.allow_shell, self.allow_web);
+        let ask = self.ask_each || self.access_mode == "ask";
+        std::thread::spawn(move || {
+            let sid = match core.start(&text, &workspace, allow_write, allow_shell, allow_web, ask) {
+                Ok(sid) => sid,
+                Err(e) => {
+                    let _ = tx.send(BackendResponse::Core(CoreEvent::Refused { task_id, error: e }));
+                    return;
+                }
+            };
+            let _ = tx.send(BackendResponse::Core(CoreEvent::Started { task_id, sid: sid.clone() }));
+            let mut after = 0usize;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(350));
+                let v = match core.poll(&sid, after) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(BackendResponse::Core(CoreEvent::Refused { task_id, error: e }));
+                        return;
+                    }
+                };
+                let steps = v["steps"].as_array().cloned().unwrap_or_default();
+                // Steps first: a card this round sent has to exist before the
+                // pending list says which cards are live.
+                for s in &steps {
+                    translate_step(&tx, task_id, s, &workspace);
+                }
+                if !steps.is_empty() {
+                    after += steps.len();
+                }
+                // `pending` is what the loop still holds. A service that reports
+                // no list is not the same as an empty one — except once the run
+                // is over, when it cannot be waiting on anyone.
+                let finished = v["status"].as_str().map(|s| s != "running").unwrap_or(true);
+                match (v["pending"].as_array(), finished) {
+                    (Some(list), _) => {
+                        let ids = list.iter().filter_map(serde_json::Value::as_str)
+                            .map(str::to_string).collect::<Vec<String>>();
+                        let _ = tx.send(BackendResponse::Core(CoreEvent::Pending { task_id, ids }));
+                    }
+                    (None, true) => {
+                        let _ = tx.send(BackendResponse::Core(CoreEvent::Pending { task_id, ids: vec![] }));
+                    }
+                    (None, false) => {}
+                }
+                if finished {
+                    let status = v["status"].as_str().unwrap_or("done").to_string();
+                    let _ = tx.send(BackendResponse::Core(CoreEvent::Status { task_id, status }));
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Send one answer to the loop, off-thread so a slow service cannot freeze
+    /// the window. The outcome comes back as an `Answered` event: the loop only
+    /// accepts a question it still holds, and a 404 is not the same as a yes.
+    fn answer(&mut self, task_id: u64, approval_id: String, decision: String) {
+        let Some(sid) = self.core_sid_of(task_id) else {
+            self.line = "This run has no supervised session on the agent loop, so there is nothing to answer."
+                .to_string();
+            return;
+        };
+        let (core, tx) = (self.core.clone(), self.response_tx.clone());
+        std::thread::spawn(move || {
+            let error = core.approve(&sid, &approval_id, &decision).err();
+            let _ = tx.send(BackendResponse::Core(CoreEvent::Answered {
+                task_id, approval_id, decision, error,
+            }));
+        });
+    }
+
+    /// Stop a supervised run. The loop's `cancel` ends the turn; the cards it was
+    /// holding go expired with it, which `Pending` reports on the next poll.
+    fn stop_run(&mut self, task_id: u64) {
+        let Some(sid) = self.core_sid_of(task_id) else {
+            self.set_task_status(task_id, "Idle");
+            return;
+        };
+        let core = self.core.clone();
+        std::thread::spawn(move || { let _ = core.cancel(&sid); });
+    }
+
+    /// The supervised session a task is running under, when it has one. Only
+    /// such a run can be answered or cancelled — the Rust service has no
+    /// question to answer.
+    fn core_sid_of(&self, task_id: u64) -> Option<String> {
+        self.tasks.iter().find(|t| t.id == task_id).and_then(|t| t.core_sid.clone())
+    }
+
+    /// The loop's `assistant` and `error` steps are the only answers it gives;
+    /// until one arrives the placeholder is the only thing saying the run is
+    /// alive, so the first real event has to retire it.
+    fn clear_think_placeholder(&mut self, task_id: u64) {
+        let Some((tid, mid)) = self.pending_think else { return };
+        if tid != task_id { return; }
+        if let Some(t) = self.tasks.iter_mut().find(|t| t.id == tid) {
+            if t.msgs.iter().any(|m| m.id == mid && m.content == "Thinking…") {
+                t.msgs.retain(|m| m.id != mid);
+            }
+        }
+        self.pending_think = None;
+        self.pending_content = None;
+    }
+
+    fn push_core_msg(&mut self, task_id: u64, kind: MsgKind, content: String, title: Option<String>) -> u64 {
+        let mid = self.next_id;
+        self.next_id += 1;
+        if let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+            t.msgs.push(Msg {
+                id: mid, author: "Fennec".into(), content, kind, time: now(),
+                collapsed: true,
+                meta: title.map(|title| MsgMeta {
+                    duration: None, title: Some(title), add: None, del: None, path: None, size: None, verb: None, root: None,
+                }),
+            });
+        }
+        self.scroll_handle.scroll_to_bottom();
+        mid
+    }
+
+    /// Once a supervised run ends, say in writing which files it put on disk.
+    /// The list is built from the delivery cards the run itself produced, so it
+    /// cannot name a file the loop never wrote — and it skips the attachments
+    /// the user picked, which carry no verb.
+    fn append_delivery_summary(&mut self, task_id: u64) {
+        let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) else { return };
+        let mut items: Vec<(String, String)> = Vec::new();
+        let mut last_result: Option<usize> = None;
+        for (i, m) in t.msgs.iter().enumerate() {
+            if m.kind == MsgKind::Result {
+                last_result = Some(i);
+            } else if m.kind == MsgKind::Attach {
+                if let Some(meta) = m.meta.as_ref() {
+                    if let (Some(p), Some(v)) = (&meta.path, &meta.verb) {
+                        items.push((p.clone(), v.clone()));
+                    }
+                }
+            }
+        }
+        let borrowed: Vec<(&str, &str)> = items.iter().map(|(p, v)| (p.as_str(), v.as_str())).collect();
+        let summary = fennec_ui::attention::delivery_summary(&borrowed);
+        if summary.is_empty() { return; }
+        match last_result {
+            Some(i) => {
+                let m = &mut t.msgs[i];
+                if m.content.contains("**Delivered ") { return; }
+                m.content = format!("{}\n\n{summary}", m.content.trim_end());
+            }
+            // A run that wrote files without ever answering: the list is the
+            // only report it gave, so it gets its own message.
+            None => {
+                t.msgs.push(Msg {
+                    id: self.next_id, author: "Fennec".into(), content: summary,
+                    kind: MsgKind::Result, time: now(), collapsed: false, meta: None,
+                });
+                self.next_id += 1;
+            }
+        }
+        self.scroll_handle.scroll_to_bottom();
+    }
+
+    /// Fold one translated loop event into the task model. Every arm is keyed by
+    /// the event's own task id: a run keeps reporting after the user clicks to
+    /// another row, and its answer must land in the task it came from.
+    fn apply_core(&mut self, ev: CoreEvent, cx: &mut Context<Self>) {
+        match ev {
+            CoreEvent::Started { task_id, sid } => {
+                if let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+                    t.core_sid = Some(sid);
+                }
+            }
+            CoreEvent::Reasoning { task_id, text } => {
+                self.clear_think_placeholder(task_id);
+                self.push_core_msg(task_id, MsgKind::Think, text, None);
+            }
+            CoreEvent::Answer { task_id, text } => {
+                self.clear_think_placeholder(task_id);
+                self.push_core_msg(task_id, MsgKind::Result, text, None);
+            }
+            CoreEvent::Tool { task_id, id, title, detail, ok, output } => {
+                self.clear_think_placeholder(task_id);
+                match (ok, self.tools.get(&id).copied()) {
+                    (None, _) => {
+                        let mid = self.push_core_msg(task_id, MsgKind::Action, detail, Some(title));
+                        self.tools.insert(id, (task_id, mid));
+                    }
+                    (Some(ok), Some((_, mid))) => {
+                        self.tools.remove(&id);
+                        if let Some(m) = self.msg_mut(task_id, mid) {
+                            m.collapsed = true;
+                            if !output.is_empty() { m.content = output; }
+                            if let Some(meta) = m.meta.as_mut() {
+                                meta.duration = Some(if ok { String::new() } else { "failed".into() });
+                            }
+                        }
+                    }
+                    // A result whose `tool_start` this window never saw (a run
+                    // selected after a restart): show it closed, not running.
+                    (Some(ok), None) => {
+                        let mid = self.push_core_msg(task_id, MsgKind::Action, output, Some(title));
+                        if let Some(m) = self.msg_mut(task_id, mid) {
+                            if let Some(meta) = m.meta.as_mut() {
+                                meta.duration = Some(if ok { String::new() } else { "failed".into() });
+                            }
+                        }
+                    }
+                }
+            }
+            CoreEvent::Deliver { task_id, name, path, verb, root } => {
+                self.clear_think_placeholder(task_id);
+                let mid = self.push_core_msg(task_id, MsgKind::Attach, String::new(), Some(name));
+                if let Some(m) = self.msg_mut(task_id, mid) {
+                    if let Some(meta) = m.meta.as_mut() {
+                        meta.path = Some(path);
+                        meta.verb = Some(verb.to_string());
+                        meta.root = Some(root);
+                    }
+                }
+            }
+            CoreEvent::Approval { task_id, approval } => {
+                self.clear_think_placeholder(task_id);
+                if let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+                    match t.approvals.iter_mut().find(|a| a.id == approval.id) {
+                        // One question, one card: a step that repeats an id
+                        // updates the card rather than opening a second way to
+                        // answer the same call.
+                        Some(open) => { if open.resolved.is_none() && !open.expired { *open = approval; } }
+                        None => t.approvals.push(approval),
+                    }
+                }
+            }
+            CoreEvent::Answered { task_id, approval_id, decision, error } => {
+                // The loop no longer holds the question (a 404), so the answer
+                // cannot land. Say which happened, not that an answer was sent.
+                let said = match &error {
+                    Some(e) => format!("Answer did not land: {e}"),
+                    None => format!("Answer sent: {}", fennec_ui::attention::decision_label(&decision)),
+                };
+                let good = error.is_none();
+                if let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+                    if let Some(a) = t.approvals.iter_mut().find(|a| a.id == approval_id) {
+                        match error {
+                            Some(e) => { a.expired = true; a.note = e; }
+                            None => a.resolved = Some(ApprovalResolution { choice_id: decision }),
+                        }
+                    }
+                }
+                self.toasts.push(Toast { text: said, good, at: std::time::Instant::now() });
+            }
+            CoreEvent::Pending { task_id, ids } => {
+                let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) else { return };
+                for a in t.approvals.iter_mut() {
+                    if a.resolved.is_none() && !a.expired && !ids.contains(&a.id) {
+                        a.expired = true;
+                        a.note = "the loop no longer holds this question".into();
+                    }
+                }
+                // A run stopped on a question waits on the user, not on the
+                // model. That is what the rail, the badge and the filter read.
+                if matches!(t.status.as_str(), "Running" | "AwaitingApproval") {
+                    t.status = if ids.is_empty() { "Running".into() } else { "AwaitingApproval".into() };
+                }
+            }
+            CoreEvent::Status { task_id, status } => {
+                self.clear_think_placeholder(task_id);
+                let word = match status.as_str() {
+                    "done" => "Complete",
+                    "error" => "Failed",
+                    "cancelled" => "Idle",
+                    _ => "Running",
+                };
+                self.set_task_status(task_id, word);
+                if status == "done" {
+                    self.append_delivery_summary(task_id);
+                }
+                if word != "Running" {
+                    if let Some(t) = self.tasks.iter_mut().find(|t| t.id == task_id) {
+                        for a in t.approvals.iter_mut() {
+                            if a.resolved.is_none() && !a.expired {
+                                a.expired = true;
+                                a.note = "the run ended before an answer arrived".into();
+                            }
+                        }
+                    }
+                    if !self.queued.is_empty() {
+                        let next = self.queued.remove(0);
+                        self.save();
+                        self.dispatch(next, cx);
+                    }
+                }
+            }
+            CoreEvent::Refused { task_id, error } => {
+                self.clear_think_placeholder(task_id);
+                self.push_core_msg(task_id, MsgKind::Result,
+                    format!("The agent loop refused this run: {error}"), None);
+                self.set_task_status(task_id, "Failed");
+            }
+        }
+        self.save();
+        cx.notify();
+    }
+}
+
+/// One loop step → what this shell shows. The words come from the table in
+/// `fennec-ui`, so both gpui shells and the PWA name the same `run_shell` the
+/// same way; only the envelope is this app's.
+fn translate_step(tx: &std::sync::mpsc::Sender<BackendResponse>, task_id: u64, step: &serde_json::Value, root: &str) {
+    use fennec_ui::attention::{args_line, clip, describe_call, path_of, risk_word};
+    let args = step["args"].clone();
+    let name = step["name"].as_str().unwrap_or("tool");
+    let (category, title) = describe_call(name, &args);
+    let call_id = step["call_id"].as_str().unwrap_or(name).to_string();
+    match step["type"].as_str().unwrap_or("") {
+        "assistant" => {
+            let reasoning = step["reasoning"].as_str().unwrap_or("").trim();
+            if !reasoning.is_empty() {
+                let _ = tx.send(BackendResponse::Core(CoreEvent::Reasoning {
+                    task_id, text: reasoning.to_string(),
+                }));
+            }
+            let content = step["content"].as_str().unwrap_or("").trim();
+            if !content.is_empty() {
+                let _ = tx.send(BackendResponse::Core(CoreEvent::Answer {
+                    task_id, text: content.to_string(),
+                }));
+            }
+        }
+        "tool_start" => {
+            let _ = tx.send(BackendResponse::Core(CoreEvent::Tool {
+                task_id, id: call_id, title: format!("{category} · {title}"),
+                detail: args_line(&args), ok: None, output: String::new(),
+            }));
+        }
+        "tool" => {
+            let ok = step["ok"].as_bool().unwrap_or(false);
+            let output = fennec_ui::attention::clip(&step["result"].to_string(), 4000);
+            let _ = tx.send(BackendResponse::Core(CoreEvent::Tool {
+                task_id, id: call_id, title: format!("{category} · {title}"),
+                detail: args_line(&args), ok: Some(ok), output,
+            }));
+            // A write that succeeded put a file on disk: deliver it as its own
+            // card, so the user gets the artifact and not just a tool row.
+            if ok {
+                if let (Some(verb), Some(path)) = (fennec_ui::attention::delivery_verb(name), path_of(&args)) {
+                    let name = std::path::Path::new(&path).file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.clone());
+                    let _ = tx.send(BackendResponse::Core(CoreEvent::Deliver {
+                        task_id, name, path, verb, root: root.to_string(),
+                    }));
+                }
+            }
+        }
+        "approval_required" => {
+            let id = step["approval_id"].as_str().unwrap_or("");
+            // Same rule the desktop and the PWA apply: a question with no id
+            // cannot be answered and one with no name cannot be acted on, so
+            // neither becomes a card.
+            if id.is_empty() || name.is_empty() { return; }
+            let _ = tx.send(BackendResponse::Core(CoreEvent::Approval {
+                task_id,
+                approval: ApprovalRequest {
+                    id: clip(id, 64),
+                    action: name.to_string(),
+                    risk_level: risk_word(step["risk"].as_str()),
+                    command: Some(title.clone()),
+                    resolved: None,
+                    category,
+                    reason: clip(step["reason"].as_str().unwrap_or(""), 400),
+                    path: path_of(&args),
+                    expired: false,
+                    note: String::new(),
+                },
+            }));
+        }
+        _ => {}
+    }
 }
 
 fn now() -> String { chrono::Local::now().format("%H:%M").to_string() }
@@ -1275,6 +1832,8 @@ impl App {
     fn left(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let query = self.search.read(cx).value().trim().to_string();
+        let q_lower = query.to_lowercase();
+        let attention = self.attention_count();
         let tasks = self.filtered_tasks(&query);
         div().w(px(260.0)).flex_shrink_0().bg(t.background).border_r_1().border_color(t.border).flex().flex_col().p_4().gap_3()
             // Navigation
@@ -1282,8 +1841,11 @@ impl App {
                 .child(Button::new("nav-new-task").label("⟳ New Task").w_full().h(px(36.0)).rounded_md()
                     .border_1().border_color(t.border)
                     .on_click(cx.listener(|a, _, _, cx| { a.new_task(); cx.notify(); })))
-                .child(Button::new("nav-attention").label("▷ My Attention").w_full().h(px(36.0)).rounded_md()
+                .child(Button::new("nav-attention").w_full().h(px(36.0)).rounded_md()
                     .border_1().border_color(t.border)
+                    .child(div().flex().items_center().gap_2()
+                        .child(Label::new("▷ My Attention").text_size(px(13.0)))
+                        .children(attention_badge(&t, attention)))
                     .when(self.attention_only, |b| b.bg(t.yellow.opacity(0.15)).border_color(t.yellow))
                     .on_click(cx.listener(|a, _, _, cx| { a.attention_only = !a.attention_only; a.search_open = false; cx.notify(); })))
                 .child(Button::new("nav-search").label("⌕ Search").w_full().h(px(36.0)).rounded_md()
@@ -1321,6 +1883,7 @@ impl App {
                     let is_active = self.active_workspace_id.as_deref() == Some(&ws.id);
                     let ws_tasks: Vec<&Task> = self.tasks.iter()
                         .filter(|task| task.workspace_id.as_deref() == Some(&ws.id))
+                        .filter(|task| self.task_shown(task, &q_lower))
                         .collect();
 
                     div().flex().flex_col().gap_1()
@@ -1386,28 +1949,17 @@ impl App {
                     .child(Input::new(&self.search).h(px(32.0)).text_size(px(12.0)))
                     .child(Label::new(if query.is_empty() { String::new() } else { format!("{} tasks", tasks.len()) }).text_size(px(10.0)).text_color(t.muted_foreground))
             }))
-            // Approved Commands (when attention_only is active)
+            // My Attention: the commands the user already answered, click to jump.
             .children(self.attention_only.then(|| {
-                let t = t.clone();
-                let approved = self.approved_commands();
-                div().flex().flex_col().gap_2().flex_1().overflow_y_scrollbar()
-                    .child(Label::new("APPROVED COMMANDS").text_size(px(10.0)).text_color(t.muted_foreground).font_weight(FontWeight::MEDIUM))
-                    .children(approved.iter().map(|(task, approval)| {
-                        let t = t.clone();
-                        let command = approval.command.clone().unwrap_or_else(|| approval.action.clone());
-                        let risk_color = match approval.risk_level.as_str() {
-                            "high" => t.red,
-                            "medium" => t.yellow,
-                            _ => t.green,
-                        };
-                        div().p_3().rounded_md().bg(t.muted).border_1().border_color(t.border)
-                            .child(Label::new(command).text_size(px(12.0)).font_weight(FontWeight::MEDIUM).truncate())
-                            .child(div().flex().items_center().gap_1().mt_1()
-                                .child(Label::new(task.title.as_str()).text_size(px(10.0)).text_color(t.accent).truncate())
-                                .child(Label::new("·").text_size(px(10.0)))
-                                .child(div().w(px(5.0)).h(px(5.0)).rounded_full().bg(risk_color))
-                                .child(Label::new(approval.risk_level.as_str()).text_size(px(10.0)).text_color(risk_color)))
-                    }))
+                let weak = cx.entity().downgrade();
+                approved_commands_panel(&t, &self.approved_commands(), move |task_id, _window, cx| {
+                    let Ok(id) = task_id.parse::<u64>() else { return };
+                    let _ = weak.update(cx, |a, cx| {
+                        a.select_task(id);
+                        a.attention_only = false;
+                        cx.notify();
+                    });
+                })
             }))
     }
 
@@ -1428,9 +1980,11 @@ impl App {
                     .child(Button::new("stop").label("Stop").ghost().small()
                         .when(!is_working, |b| b.disabled(true))
                         .on_click(cx.listener(|a, _, _, cx| {
-                            if let Some(task) = a.task_mut() {
-                                task.status = "Failed".to_string();
-                            }
+                            // Cancel means asking the loop to stop, not relabeling
+                            // the row. A run this window never supervised only has
+                            // its own status to change.
+                            let task_id = a.active.unwrap_or(0);
+                            a.stop_run(task_id);
                             cx.notify();
                         })))
                     .child(Button::new("compact").label("⊟").ghost().small()
@@ -1518,10 +2072,15 @@ impl App {
                 }
                 MsgKind::Action => {
                     let title = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into());
-                    let dur = m.meta.as_ref().and_then(|x| x.duration.clone()).unwrap_or_default();
-                    let running = dur.is_empty();
-                    let status_text = if running { "Running…".to_string() } else { format!("Complete · {dur}") };
-                    let status_color = if running { t.yellow } else { t.green };
+                    let dur = m.meta.as_ref().and_then(|x| x.duration.clone());
+                    let running = dur.is_none();
+                    let dur = dur.unwrap_or_default();
+                    let failed = dur == "failed";
+                    let status_text = if running { "Running…".to_string() }
+                        else if failed { "Failed".to_string() }
+                        else if dur.is_empty() { "Complete".to_string() }
+                        else { format!("Complete · {dur}") };
+                    let status_color = if running { t.yellow } else if failed { t.red } else { t.green };
                     let collapsed = m.collapsed;
                     let weak2 = weak.clone();
                     list = list.child(action_card(&t, id, "🔍", &title, &m.content, &status_text, status_color, !collapsed,
@@ -1532,15 +2091,24 @@ impl App {
                 MsgKind::Attach => {
                     let name = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
                     let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
-                    let size = m.meta.as_ref().and_then(|x| x.size.clone()).unwrap_or_default();
-                    let dir = std::path::Path::new(&path).parent()
-                        .map(|d| d.to_string_lossy().to_string())
-                        .filter(|d| !d.is_empty())
-                        .unwrap_or_else(|| ".".into());
-                    let kind = artifact_kind(&name);
-                    let trailing = if size.is_empty() { "…".to_string() } else { size };
-                    list = list.child(attachment_card(&t, id, &name, &format!("{dir} · {kind}"), &trailing,
-                        None::<fn(&mut Window, &mut gpui::App)>));
+                    let subtitle = attachment_subtitle(&path, &name);
+                    // A delivered path is relative to the directory the loop runs
+                    // in. Handing the OS a bare relative path resolves it against
+                    // this app's own directory, so the chip opens nothing — name
+                    // the file where the run actually put it.
+                    let root = m.meta.as_ref().and_then(|x| x.root.clone())
+                        .unwrap_or_else(|| self.core_workspace());
+                    let open_path = if path.is_empty() || std::path::Path::new(&path).is_absolute() {
+                        path
+                    } else {
+                        std::path::Path::new(&root).join(&path).to_string_lossy().into_owned()
+                    };
+                    list = list.child(attachment_card(&t, id, &name, &subtitle, "…",
+                        Some(move |_: &mut Window, _: &mut gpui::App| {
+                            if !open_path.is_empty() {
+                                fennec_ui::inspector::open_url(&open_path);
+                            }
+                        })));
                 }
                 MsgKind::Edit => {
                     let add = m.meta.as_ref().and_then(|x| x.add).unwrap_or(0);
@@ -1613,6 +2181,41 @@ impl App {
                 }
             }
         }
+        // A gated call the loop is stopped on, last in the timeline because it is
+        // the one thing here that cannot move until the user does. The card comes
+        // from `fennec-ui`, so the same question reads and answers identically in
+        // the desktop shell and here.
+        let task_id = self.active.unwrap_or(0);
+        let approvals = self.task().map(|t| t.approvals.clone()).unwrap_or_default();
+        for a in &approvals {
+            let detail = a.command.clone().unwrap_or_else(|| a.action.clone());
+            let state = match (&a.resolved, a.expired) {
+                (Some(_), _) => CardState::Answered,
+                (None, true) => CardState::Expired,
+                (None, false) => CardState::Pending,
+            };
+            let shared = ApprovalCard {
+                id: &a.id,
+                category: &a.category,
+                title: a.command.as_deref().unwrap_or(&a.action),
+                risk: &a.risk_level,
+                reason: &a.reason,
+                path: a.path.as_deref(),
+                detail: &detail,
+                state,
+                decision: a.resolved.as_ref().map(|r| r.choice_id.as_str()).unwrap_or(""),
+                note: &a.note,
+            };
+            let weak2 = weak.clone();
+            let approval_id = a.id.clone();
+            list = list.child(approval_card(&t, &shared, move |decision, _window, cx| {
+                let decision = decision.to_string();
+                let _ = weak2.update(cx, |a, cx| {
+                    a.answer(task_id, approval_id.clone(), decision);
+                    cx.notify();
+                });
+            }));
+        }
         list
     }
 
@@ -1629,7 +2232,9 @@ impl App {
                 window.push_notification(Notification::info(format!("{n} tasks in queue")), cx);
             }
         }).into_any_element()
-    }    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    }
+
+    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let send_enabled = !self.composer.read(cx).value().trim().is_empty();
         let mut col = div().border_t_1().border_color(t.border).bg(t.background).px_5().py_3().flex().flex_col().gap_2();
@@ -2071,7 +2676,7 @@ impl App {
             }
         }
         let sub_items: Vec<InspectItem> = self.agents.iter().skip(1).enumerate().map(|(i, a)| InspectItem { id: format!("{i}"), title: a.clone(), subtitle: "delegated agent".into(), detail: String::new(), url: None }).collect();
-        let proc_items: Vec<InspectItem> = msgs.iter().filter(|m| m.kind == MsgKind::Action).enumerate().map(|(i, m)| InspectItem { id: format!("{i}"), title: m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into()), subtitle: m.meta.as_ref().and_then(|x| x.duration.clone()).unwrap_or_else(|| "running".into()), detail: m.content.clone(), url: None }).collect();
+        let proc_items: Vec<InspectItem> = msgs.iter().filter(|m| m.kind == MsgKind::Action).enumerate().map(|(i, m)| InspectItem { id: format!("{i}"), title: m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into()), subtitle: m.meta.as_ref().and_then(|x| x.duration.clone()).map(|d| if d.is_empty() { "complete".into() } else { d }).unwrap_or_else(|| "running".into()), detail: m.content.clone(), url: None }).collect();
         let skill_items: Vec<InspectItem> = skills.iter().enumerate().map(|(i, s)| InspectItem { id: format!("{i}"), title: s.clone(), subtitle: "tool kind".into(), detail: String::new(), url: None }).collect();
         let art_items: Vec<InspectItem> = msgs.iter().filter(|m| m.kind == MsgKind::Attach || m.kind == MsgKind::Edit).enumerate().map(|(i, m)| InspectItem { id: format!("{i}"), title: m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into()), subtitle: m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default(), detail: m.content.clone(), url: None }).collect();
         let web_items: Vec<InspectItem> = links.iter().enumerate().map(|(i, l)| InspectItem { id: format!("{i}"), title: l.clone(), subtitle: "linked reading".into(), detail: String::new(), url: Some(l.clone()) }).collect();

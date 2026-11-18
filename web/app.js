@@ -177,6 +177,53 @@
     return div.innerHTML;
   }
 
+  // An answer is Markdown: the loop writes `**bold**`, `- ` bullets and `code`
+  // spans, and the timeline showing the asterisks verbatim reads as broken.
+  // Every line is escaped first, so this only ever adds the markup the loop
+  // itself wrote — a `<script>` in an answer stays text.
+  function inlineMd(line) {
+    return escapeHtml(line)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+
+  function mdBody(text) {
+    const out = [];
+    let para = [];
+    let list = null;
+    const flushPara = () => {
+      if (para.length) out.push('<p>' + para.map(inlineMd).join('<br>') + '</p>');
+      para = [];
+    };
+    const flushList = () => {
+      if (list) out.push('<ul class="md-list">' + list.join('') + '</ul>');
+      list = null;
+    };
+    for (const line of String(text || '').split('\n')) {
+      const item = line.match(/^\s*[-*]\s+(.*)$/);
+      if (item) {
+        flushPara();
+        (list = list || []).push('<li>' + inlineMd(item[1]) + '</li>');
+        continue;
+      }
+      if (!line.trim()) { flushPara(); flushList(); continue; }
+      flushList();
+      para.push(line.trim());
+    }
+    flushPara();
+    flushList();
+    return out.join('');
+  }
+
+  // Speech reads prose, not markup: the Markdown that formats a bubble would be
+  // spoken out loud as "asterisk asterisk".
+  function stripMd(text) {
+    return String(text == null ? '' : text)
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/^\s*[-*]\s+/gm, '');
+  }
+
   function activeTask() {
     return state.tasks.find((t) => t.id === state.activeId) || null;
   }
@@ -266,8 +313,85 @@
     EvaluateFineTunedModel: { label: 'Evaluate model', icon: '⚡', category: 'other' },
   };
 
+  // The core loop's own registry (fennec_core/tools.py) names calls in snake
+  // case; the Rust table above names the same actions in enum form. Both arrive
+  // here so a card never falls back to a bare "🔧 write_file".
+  const CORE_TOOL_KINDS = {
+    write_file: { label: 'Write file', icon: '📝', category: 'edit' },
+    edit_file: { label: 'Edit file', icon: '📝', category: 'edit' },
+    read_file: { label: 'Read file', icon: '📖', category: 'source' },
+    list_dir: { label: 'Inspect repository', icon: '📁', category: 'source' },
+    grep: { label: 'Search code', icon: '🔍', category: 'source' },
+    semantic_search: { label: 'Semantic search', icon: '🔍', category: 'source' },
+    run_shell: { label: 'Run command', icon: '⌨', category: 'command' },
+    run_python: { label: 'Run python', icon: '🧪', category: 'command' },
+    git_status: { label: 'Repository status', icon: '🔀', category: 'command' },
+    git_diff: { label: 'Review diff', icon: '👁', category: 'edit' },
+    web_task: { label: 'Web research', icon: '🌐', category: 'web' },
+    coworker_task: { label: 'Delegate to coworker', icon: '🤝', category: 'other' },
+    summarise: { label: 'Summarise the run', icon: '✓', category: 'other' },
+  };
+
+  // What a call is about, worded the way fennec-ui/src/attention.rs:describe_call
+  // words it, so the native shells and this one title the same call alike.
+  function describeCall(name, args) {
+    const a = args || {};
+    const s = (k) => (typeof a[k] === 'string' ? a[k] : '');
+    switch (name) {
+      case 'list_dir': return { title: 'Inspect repository ' + (s('path') || s('dir') || '.'), path: '' };
+      case 'read_file': return { title: 'Read file ' + (s('path') || s('file')), path: s('path') || s('file') };
+      case 'write_file': return { title: 'Write file ' + s('path'), path: s('path') };
+      case 'edit_file': return { title: 'Edit file ' + s('path'), path: s('path') };
+      case 'grep': return { title: 'Search code ' + (s('pattern') || s('query')), path: '' };
+      case 'semantic_search': return { title: 'Semantic search ' + s('query'), path: '' };
+      case 'run_python': return { title: 'Run python ' + s('code').slice(0, 48), path: '' };
+      case 'run_shell': return { title: 'Run command ' + (s('cmd') || s('command')), path: '' };
+      case 'git_status': return { title: 'Repository status', path: '' };
+      case 'git_diff': return { title: 'Review diff', path: '' };
+      case 'web_task': return { title: 'Web research task', path: '' };
+      case 'coworker_task': return { title: 'Delegate to OpenBot coworker', path: '' };
+      case 'summarise': return { title: 'Summarise the run', path: '' };
+      default: return { title: name || 'Action', path: '' };
+    }
+  }
+
+  // The two calls that touch the disk. Delivery is keyed on the tool, not on a
+  // category, so a read that mentions a path never shows up as a written file.
+  const WRITE_TOOLS = { write_file: 'created', edit_file: 'updated' };
+
+  function extOf(name) {
+    const dot = (name || '').lastIndexOf('.');
+    return dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+  }
+
+  // Mirrors fennec-ui/src/markdown.rs:artifact_kind / artifact_badge.
+  const ARTIFACT_KINDS = {
+    md: 'Markdown attachment', rs: 'Rust source', py: 'Python source',
+    json: 'Config file', toml: 'Config file', yaml: 'Config file', yml: 'Config file',
+    txt: 'Text file', js: 'Script', ts: 'Script', tsx: 'Script', jsx: 'Script',
+    html: 'HTML', htm: 'HTML', css: 'CSS',
+  };
+  function artifactKind(name) { return ARTIFACT_KINDS[extOf(name)] || 'File attachment'; }
+  function artifactBadge(name) { return (extOf(name) || 'file').toUpperCase().slice(0, 4); }
+
+  function baseName(p) {
+    const segs = String(p || '').split(/[\\/]/).filter(Boolean);
+    return segs.length ? segs[segs.length - 1] : (p || 'file');
+  }
+
+  // Mirrors fennec-ui/src/markdown.rs:attachment_subtitle — a file at the
+  // workspace root has no directory to name, so it shows the kind alone.
+  function attachmentSubtitle(relPath, name) {
+    const segs = String(relPath || '').split(/[\\/]/).filter(Boolean);
+    segs.pop();
+    const dir = segs.join('/');
+    const kind = artifactKind(name);
+    return dir ? dir + ' · ' + kind : kind;
+  }
+
   function toolMeta(kind) {
-    return TOOL_KINDS[kind] || { label: kind || 'Action', icon: '🔧', category: 'other' };
+    return TOOL_KINDS[kind] || CORE_TOOL_KINDS[kind]
+      || { label: kind || 'Action', icon: '🔧', category: 'other' };
   }
 
   function toolContent(te) {
@@ -478,19 +602,17 @@
 
       case 'attach': {
         const fn = meta.title || 'file';
-        const path = meta.path || '';
-        const size = meta.size || '';
-        const icon = meta.isImage ? '🖼' : '📄';
-        const kindLabel = meta.isImage ? 'Image attachment' : (meta.kindLabel || 'Document attachment');
+        const badge = meta.badge || (meta.isImage ? 'IMG' : artifactBadge(fn));
+        const subtitle = meta.subtitle || attachmentSubtitle(meta.path || '', fn);
         wrap.innerHTML = `
           <div class="message-card">
-            <div class="attachment-card">
-              <span class="attachment-icon">${icon}</span>
-              <div class="attachment-info">
-                <div class="attachment-name">${escapeHtml(fn)}</div>
-                <div class="muted attachment-sub">${escapeHtml(path ? path + ' · ' : '')}${escapeHtml(kindLabel)}</div>
-              </div>
-              <span class="attachment-size">${escapeHtml(size)}</span>
+            <div class="file-chip" role="button" tabindex="0" aria-label="Open ${escapeHtml(fn)}">
+              <span class="file-chip-badge" aria-hidden="true">${escapeHtml(badge)}</span>
+              <span class="file-chip-text">
+                <span class="file-chip-name">${escapeHtml(fn)}</span>
+                <span class="file-chip-sub">${escapeHtml(subtitle)}</span>
+              </span>
+              <button class="file-chip-menu" type="button" aria-label="Actions for ${escapeHtml(fn)}">⋯</button>
             </div>
           </div>`;
         break;
@@ -552,7 +674,7 @@
               <span class="message-time">${time}</span>
               <button class="tts-btn" type="button" title="Read aloud" aria-label="Read aloud">🔊</button>
             </div>
-            <div class="message-body">${escapeHtml(m.content)}</div>
+            <div class="message-body md">${mdBody(m.content)}</div>
           </div>`;
         break;
       }
@@ -587,6 +709,22 @@
       reviewBtn.addEventListener('click', () => openDiff(m));
     }
 
+    // Delivered file: the chip opens it, the menu holds the rest.
+    const chip = wrap.querySelector('.file-chip');
+    if (chip) {
+      chip.addEventListener('click', (e) => {
+        if (e.target.closest('.file-chip-menu')) return;
+        openDeliveredFile(m);
+      });
+      chip.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDeliveredFile(m); }
+      });
+      chip.querySelector('.file-chip-menu').addEventListener('click', (e) => {
+        e.stopPropagation();
+        openChipMenu(e.currentTarget, m);
+      });
+    }
+
     // Approval answers
     wrap.querySelectorAll('.approval-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -617,7 +755,7 @@
     }
     if (speakingBtn === btn) { stopSpeaking(); return; }
     stopSpeaking();
-    const utter = new SpeechSynthesisUtterance(m.content || '');
+    const utter = new SpeechSynthesisUtterance(stripMd(m.content));
     utter.lang = 'en-US';
     utter.onend = () => { if (speakingBtn === btn) stopSpeaking(); };
     utter.onerror = () => { if (speakingBtn === btn) stopSpeaking(); };
@@ -641,6 +779,127 @@
     $('diff-del').textContent = '-' + (meta.del || 0);
     $('diff-body').textContent = meta.diff;
     dlg.showModal();
+  }
+
+  // ── Delivered files: open, copy path, save a copy ─────────────────────────
+  // The core loop owns the workspace on disk and answers /api/file for it. The
+  // Rust chat backend has no file route and never writes a file, so a chip
+  // aimed at it says what is missing instead of showing an empty pane.
+  async function readDelivered(m) {
+    const path = (m.meta && m.meta.path) || '';
+    if (!path) return { error: 'This card carries no path to open.' };
+    if ((await probeBackendKind()) !== 'core') {
+      return { error: 'Preview needs the core agent loop. Point Settings → Connection at fennec-core.' };
+    }
+    const root = (m.meta && m.meta.workspace) || runFolder();
+    const ws = root ? '&workspace=' + encodeURIComponent(root) : '';
+    try {
+      const r = await apiFetch('/api/file?path=' + encodeURIComponent(path) + ws);
+      if (!r.ok) return { error: 'The backend refused ' + path + ' (HTTP ' + r.status + ').' };
+      const j = await r.json();
+      return { text: String(j.content || ''), lines: j.lines };
+    } catch (e) {
+      return { error: 'Could not reach the backend: ' + (e && e.message ? e.message : e) };
+    }
+  }
+
+  async function openDeliveredFile(m) {
+    const dlg = $('file-dialog');
+    if (!dlg) return;
+    const name = (m.meta && m.meta.title) || 'file';
+    $('file-name').textContent = name;
+    $('file-path').textContent = joinPath((m.meta && m.meta.workspace) || runFolder(), (m.meta && m.meta.path) || '');
+    $('file-meta').textContent = 'reading…';
+    const body = $('file-body');
+    body.textContent = '';
+    dlg.showModal();
+    const res = await readDelivered(m);
+    if (res.error) {
+      $('file-meta').textContent = res.error;
+      body.textContent = '';
+      return;
+    }
+    $('file-meta').textContent = (res.lines != null ? res.lines + ' lines · ' : '')
+      + formatFileSize(new TextEncoder().encode(res.text).length);
+    body.textContent = res.text;
+  }
+
+  // A delivered path is relative to the workspace the run worked in. The card
+  // shows it that way — repo-relative is how the agent refers to it — but a
+  // copied or displayed location has to resolve from anywhere.
+  function joinPath(root, rel) {
+    if (!rel) return '';
+    // "." is the core's own root, so a path relative to it needs no prefix.
+    if (!root || root === '.') return rel;
+    if (/^[a-zA-Z]:[\\/]/.test(rel) || rel[0] === '/' || rel.slice(0, 2) === '\\\\') return rel;
+    const win = root.indexOf('\\') !== -1;
+    const joined = root.replace(/[\\/]+$/, '') + (win ? '\\' : '/') + rel.replace(/^[\\/]+/, '');
+    // A copied path gets pasted into a shell or an Open dialog; one mixed
+    // separator in the middle of a Windows path reads as two different things.
+    return win ? joined.replace(/\//g, '\\') : joined;
+  }
+
+  async function copyChipPath(m) {
+    const rel = (m.meta && (m.meta.path || m.meta.title)) || '';
+    const text = joinPath((m.meta && m.meta.workspace) || runFolder(), rel);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Path copied.', 'ok');
+    } catch (_) {
+      // The browser can refuse the clipboard (an unfocused window, a denied
+      // permission). Showing the path is the next best thing to copying it —
+      // and it must not read as if the copy had worked.
+      toast('Copy blocked by the browser: ' + text, 'info');
+    }
+  }
+
+  // Saving goes through the browser's own download, because a web page cannot
+  // write to the folder the agent wrote in — the file is already on disk there.
+  async function saveDeliveredCopy(m) {
+    const res = await readDelivered(m);
+    if (res.error) { toast(res.error, 'info'); return; }
+    const url = URL.createObjectURL(new Blob([res.text], { type: 'text/plain' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (m.meta && m.meta.title) || 'file';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  let chipMenuEl = null;
+
+  function closeChipMenu() {
+    if (chipMenuEl) { chipMenuEl.remove(); chipMenuEl = null; }
+  }
+
+  function openChipMenu(anchor, m) {
+    closeChipMenu();
+    const menu = document.createElement('div');
+    menu.className = 'chip-menu';
+    menu.setAttribute('role', 'menu');
+    const items = [
+      { label: 'Open', run: () => openDeliveredFile(m) },
+      { label: 'Copy path', run: () => copyChipPath(m) },
+      { label: 'Save a copy', run: () => saveDeliveredCopy(m) },
+    ];
+    for (const it of items) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip-menu-item';
+      b.setAttribute('role', 'menuitem');
+      b.textContent = it.label;
+      b.addEventListener('click', () => { closeChipMenu(); it.run(); });
+      menu.appendChild(b);
+    }
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8));
+    const top = r.bottom + 6 + menu.offsetHeight > window.innerHeight
+      ? r.top - menu.offsetHeight - 6 : r.bottom + 6;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    chipMenuEl = menu;
+    setTimeout(() => document.addEventListener('click', closeChipMenu, { once: true }), 0);
   }
 
   // ── Render: task queue (only while working AND prompts queued) ────────────
@@ -961,9 +1220,17 @@
     return backendKind;
   }
 
-  async function startCoreTask(task, prompt) {
+  // The workspace name a run is started in: the active workspace's own folder,
+  // or "." meaning the core's configured root. Every delivered path is relative
+  // to what this returns, so the file route has to be asked with the same name —
+  // including for cards saved before the run's directory was recorded on them.
+  function runFolder() {
     const ws = activeWorkspace();
-    const folder = (ws && Array.isArray(ws.source_folders) && ws.source_folders[0]) || '.';
+    return (ws && Array.isArray(ws.source_folders) && ws.source_folders[0]) || '.';
+  }
+
+  async function startCoreTask(task, prompt) {
+    const folder = runFolder();
     const flags = permissionMode === 'full'
       ? { allow_write: true, allow_shell: true, allow_web: true }
       : permissionMode === 'auto'
@@ -980,6 +1247,9 @@
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const j = await resp.json();
     task.backendId = j.id;
+    // The directory the run is jailed to. A delivered path is relative to it, so
+    // opening one later has to name it back to the file route.
+    task.backendWs = typeof j.workspace === 'string' ? j.workspace : '';
     task.core = true;
   }
 
@@ -991,6 +1261,58 @@
     return m;
   }
 
+  // A file the run wrote is handed to the user as its own card — badge, name,
+  // "<dir> · <kind>" and an action menu — the way a written file is delivered
+  // in Qoder. Every number on it comes from the tool's own result.
+  function deliverFile(task, s) {
+    const verb = WRITE_TOOLS[s.name];
+    if (!verb) return;
+    const rel = (s.args && typeof s.args.path === 'string') ? s.args.path.trim() : '';
+    if (!rel) return;
+    const key = 'deliver:' + (s.call_id || s.id || (s.name + ':' + rel));
+    if (task.msgs.some((x) => x.meta && x.meta.deliveryKey === key)) return;
+    const result = s.result || {};
+    const name = baseName(rel);
+    const bytes = typeof result.bytes === 'number' ? result.bytes : '';
+    const replaced = typeof result.replaced === 'number' ? result.replaced : null;
+    pushMsg(task, {
+      author: 'Fennec', content: '', kind: 'attach', collapsed: false,
+      meta: {
+        deliveryKey: key, title: name, path: rel, verb, replaced,
+        workspace: task.backendWs || '',
+        subtitle: attachmentSubtitle(rel, name),
+        badge: artifactBadge(name), kindLabel: artifactKind(name),
+        size: bytes === '' ? '' : formatFileSize(bytes),
+      },
+    });
+  }
+
+  // What the run changed, counted from the delivery cards themselves — the same
+  // list the timeline shows, so a summary cannot name a file the run never
+  // delivered, and a task resumed from history still reports its own writes.
+  function workSummary(task) {
+    const rows = [];
+    const seen = {};
+    for (const m of (task.msgs || [])) {
+      const mt = m.meta;
+      if (m.kind !== 'attach' || !mt || !mt.verb || !mt.path) continue;
+      const prev = seen[mt.path];
+      if (prev) { prev.count += 1; continue; }
+      seen[mt.path] = { path: mt.path, verb: mt.verb, size: mt.size, replaced: mt.replaced, count: 1 };
+      rows.push(seen[mt.path]);
+    }
+    if (!rows.length) return '';
+    let out = '**Delivered ' + rows.length + ' file' + (rows.length === 1 ? '' : 's') + '**\n\n';
+    for (const r of rows) {
+      const parts = [r.verb];
+      if (r.count > 1) parts.push(r.count + '×');
+      if (r.size) parts.push(r.size);
+      if (r.replaced != null && r.verb !== 'created') parts.push(r.replaced + ' replacement' + (r.replaced === 1 ? '' : 's'));
+      out += '- `' + r.path + '` — ' + parts.join(', ') + '\n';
+    }
+    return out;
+  }
+
   function applyCoreStep(task, s, thinkId) {
     const kind = s.type;
     if (kind === 'partial') {
@@ -1000,7 +1322,13 @@
     } else if (kind === 'assistant' || kind === 'final') {
       const m = coreStreamMsg(task);
       m.content = s.content || m.content;
-      if (kind === 'final') m.meta.stream = false;
+      if (kind === 'final') {
+        m.meta.stream = false;
+        const sum = workSummary(task);
+        if (sum && m.content.indexOf('**Delivered ') === -1) {
+          m.content = m.content.replace(/\s+$/, '') + '\n\n' + sum;
+        }
+      }
       if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
     } else if (kind === 'plan') {
       const text = (s.entries || []).map((e) => (e.status === 'completed' ? '✓ ' : '• ') + e.content).join('\n');
@@ -1012,15 +1340,20 @@
       if (!task.msgs.some((x) => x.meta && x.meta.toolId === id)) {
         pushMsg(task, {
           author: 'Fennec', content: '', kind: 'action', collapsed: true,
-          meta: { toolId: id, toolKind: s.name, title: s.name, status: 'Running' },
+          meta: { toolId: id, toolKind: s.name, title: describeCall(s.name, s.args).title, status: 'Running' },
         });
       }
     } else if (kind === 'tool') {
       const id = s.id || s.call_id || s.name;
-      const m = task.msgs.find((x) => x.meta && x.meta.toolId === id);
       const status = s.ok ? 'Complete' : 'Failed';
-      if (m) { m.meta.status = status; m.content = s.output || s.error || ''; }
-      else pushMsg(task, { author: 'Fennec', content: s.output || s.error || '', kind: 'action', collapsed: true, meta: { toolId: id, toolKind: s.name, title: s.name, status } });
+      const output = s.result != null
+        ? JSON.stringify(s.result).slice(0, 4000)
+        : (s.output || s.error || '');
+      const title = describeCall(s.name, s.args).title;
+      const m = task.msgs.find((x) => x.meta && x.meta.toolId === id);
+      if (m) { m.meta.title = title; m.meta.status = status; m.content = output || m.content; }
+      else pushMsg(task, { author: 'Fennec', content: output, kind: 'action', collapsed: true, meta: { toolId: id, toolKind: s.name, title, status } });
+      if (s.ok) deliverFile(task, s);
     } else if (kind === 'approval_required') {
       const id = s.approval_id;
       if (!task.approvals) task.approvals = [];
@@ -1743,6 +2076,7 @@
   }
 
   function closeDropdowns() {
+    closeChipMenu();
     const pd = $('permission-dropdown');
     const md = $('model-dropdown');
     if (pd) pd.hidden = true;
@@ -2354,6 +2688,13 @@
   if (diffDialog) {
     $('diff-close').addEventListener('click', () => diffDialog.close());
     diffDialog.addEventListener('click', (e) => { if (e.target === diffDialog) diffDialog.close(); });
+  }
+
+  // Delivered file preview close
+  const fileDialog = $('file-dialog');
+  if (fileDialog) {
+    $('file-close').addEventListener('click', () => fileDialog.close());
+    fileDialog.addEventListener('click', (e) => { if (e.target === fileDialog) fileDialog.close(); });
   }
 
   // Workspaces
