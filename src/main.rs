@@ -111,7 +111,7 @@ async fn main() {
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
         .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
-        .fallback_service(ServeDir::new("web").fallback(get(serve_index)))
+        .fallback_service(ServeDir::new(web_dir()).fallback(get(serve_index)))
         .layer(middleware::from_fn(revalidate_assets))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -129,6 +129,10 @@ async fn main() {
     // The coding-agent's UI is the web PWA: open it in the user's default
     // browser. (fennec-desktop instead shows the native gpui application.)
     open_default_browser(&format!("http://{}", addr));
+    if !web_dir().join("app.js").is_file() {
+        // Loud, because the page still renders and only silently stops working.
+        tracing::error!("no PWA app.js found; serving the embedded index without script");
+    }
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -147,6 +151,37 @@ fn open_default_browser(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Directory holding the PWA assets (`index.html`, `app.js`, `styles.css`).
+///
+/// `ServeDir` resolves a relative path against the process CWD, and this binary
+/// is started from wherever the caller happens to be (`make run`, an IDE
+/// working directory, a service launcher). The embedded `index.html` fallback
+/// still renders — the shell looks fine, the inspector fills in — but `/app.js`
+/// falls through to it and answers as `text/html`, so no listener is ever
+/// attached: Enter, Send and the composer controls do nothing at all. Resolving
+/// from the executable instead keeps the served UI working in a checkout, where
+/// the binary lives two levels below `web/` (`target/debug/`), and next to the
+/// assets when it is installed.
+fn web_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().ok();
+    let roots: Vec<std::path::PathBuf> = exe
+        .as_deref()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .into_iter()
+        .flat_map(|dir| {
+            let up_two = dir.ancestors().nth(2).map(|p| p.join("web"));
+            vec![dir.join("web"), dir.join("assets").join("web")]
+                .into_iter()
+                .chain(up_two)
+        })
+        .collect();
+    roots
+        .iter()
+        .find(|candidate| candidate.join("app.js").is_file())
+        .cloned()
+        .unwrap_or_else(|| std::path::PathBuf::from("web"))
 }
 
 async fn serve_index() -> Html<&'static str> {

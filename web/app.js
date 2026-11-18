@@ -131,6 +131,7 @@
           // Runtime-only flags must never survive a reload.
           t.polling = false;
           t.finalized = false;
+          t.msgs = stripDeliveryProse(collapseDeliveries(t.msgs));
           // A finished conversation cannot still be holding a live question, so
           // reloads of older history do not pin a dead one in My Attention.
           if (LIVE_STATUSES.indexOf(t.status) === -1) expireApprovals(t, EXPIRED_ENDED);
@@ -139,6 +140,38 @@
         }
       }
     } catch (_) { /* corrupt storage — start fresh */ }
+  }
+
+  // One delivered file, one card: keep the last card of each path. History saved
+  // while deliveries were keyed per call holds several cards for a file the run
+  // rewrote, and only the last matches what is on disk now.
+  function collapseDeliveries(msgs) {
+    const lastOf = new Map();
+    for (const m of msgs || []) {
+      const mt = m.meta;
+      if (m.kind === 'attach' && mt && mt.verb && mt.path) lastOf.set(mt.path, m);
+    }
+    return (msgs || []).filter((m) => {
+      const mt = m.meta;
+      return !(m.kind === 'attach' && mt && mt.verb && mt.path && lastOf.get(mt.path) !== m);
+    });
+  }
+
+  // Conversations saved before the delivery chip carried the verb and size hold
+  // the file list in the answer text. The chip is the report now, so the old
+  // paragraph is trimmed off on load instead of showing the same file twice —
+  // and an answer that was nothing but that paragraph goes with it.
+  function stripDeliveryProse(msgs) {
+    const out = [];
+    for (const m of msgs || []) {
+      if (typeof m.content === 'string' && m.kind !== 'user' && m.kind !== 'attach') {
+        const at = m.content.indexOf('**Delivered ');
+        if (at > -1) m.content = m.content.slice(0, at).replace(/\s+$/, '');
+        if (!m.content.trim() && at > -1) continue;
+      }
+      out.push(m);
+    }
+    return out;
   }
 
   // A question with no live run behind it stops being answerable: expired, not
@@ -187,10 +220,14 @@
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   }
 
+  // Mirrors fennec-ui/src/markdown.rs:rich_blocks — the fences come out of the
+  // text before any inline markup is applied, so a shell prompt inside one stays
+  // literal code and never shows the backticks it was written with.
   function mdBody(text) {
     const out = [];
     let para = [];
     let list = null;
+    let code = null;
     const flushPara = () => {
       if (para.length) out.push('<p>' + para.map(inlineMd).join('<br>') + '</p>');
       para = [];
@@ -199,7 +236,33 @@
       if (list) out.push('<ul class="md-list">' + list.join('') + '</ul>');
       list = null;
     };
+    const flushCode = () => {
+      if (!code) return;
+      const label = code.lang
+        ? '<div class="md-code-lang">' + escapeHtml(code.lang) + '</div>'
+        : '';
+      out.push('<div class="md-code">' + label + '<pre><code>'
+        + escapeHtml(code.lines.join('\n')) + '</code></pre></div>');
+      code = null;
+    };
+    // A fence's first line is a language only when it looks like one; anything
+    // else is the code itself, which is what the native renderer assumes.
+    const looksLikeLang = (s) => /^[A-Za-z0-9_+\-.]{1,16}$/.test(s);
     for (const line of String(text || '').split('\n')) {
+      const fence = line.match(/^ {0,3}(`{3,})(.*)$/);
+      if (code) {
+        if (fence && !fence[2].trim() && fence[1].length >= code.ticks) flushCode();
+        else code.lines.push(line);
+        continue;
+      }
+      if (fence) {
+        flushPara(); flushList();
+        const info = fence[2].trim();
+        code = { ticks: fence[1].length, lang: '', lines: [] };
+        if (looksLikeLang(info)) code.lang = info;
+        else if (info) code.lines.push(info);
+        continue;
+      }
       const item = line.match(/^\s*[-*]\s+(.*)$/);
       if (item) {
         flushPara();
@@ -210,6 +273,7 @@
       flushList();
       para.push(line.trim());
     }
+    flushCode();
     flushPara();
     flushList();
     return out.join('');
@@ -383,6 +447,13 @@
     return WRITE_TOOLS[d.toolKind] || (writeOfTitle(d.title) || {}).verb || '';
   }
 
+  // The file a message is about, from the delivery card first and the call's own
+  // words after, because a row is keyed on the file it names.
+  function writtenPath(m) {
+    const d = (m && m.meta) || {};
+    return d.path || (writeOfTitle(d.title) || {}).path || '';
+  }
+
   function extOf(name) {
     const dot = (name || '').lastIndexOf('.');
     return dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
@@ -401,6 +472,57 @@
   function baseName(p) {
     const segs = String(p || '').split(/[\\/]/).filter(Boolean);
     return segs.length ? segs[segs.length - 1] : (p || 'file');
+  }
+
+  // Mirrors fennec-ui/src/timeline.rs: the row-shortening rule the three surfaces
+  // share. A call that names a file is shown by the file's name, a command by its
+  // first ROW_WORDS words, and the whole path or command comes back when the user
+  // opens the row.
+  const ROW_WORDS = 7;
+  const FILE_VERBS = ['read file ', 'write file ', 'edit file ', 'delete file '];
+
+  // The category badge some surfaces put in front of a call's own words is already
+  // the row icon, so it is not part of the count.
+  function stripBadge(title) {
+    const at = title.indexOf(' · ');
+    if (at < 0) return title;
+    const badge = title.slice(0, at);
+    return badge.length <= 6 && /^[A-Z_]+$/.test(badge) ? title.slice(at + 3) : title;
+  }
+
+  function calledFile(title) {
+    const body = stripBadge(String(title || ''));
+    const lower = body.toLowerCase();
+    for (const verb of FILE_VERBS) {
+      if (lower.startsWith(verb)) return body.slice(verb.length).trim() || null;
+    }
+    return null;
+  }
+
+  function shortText(path, title) {
+    const p = String(path || '').trim();
+    const file = p || calledFile(title);
+    if (file) return baseName(file);
+    const words = stripBadge(String(title || '')).split(/\s+/).filter(Boolean);
+    return words.length <= ROW_WORDS ? words.join(' ') : words.slice(0, ROW_WORDS).join(' ') + ' …';
+  }
+
+  // Mirrors fennec-ui/src/timeline.rs `unique_actions`: which of a block's calls
+  // get a row, in call order — every call that did not write a file, and for each
+  // file the last write of it, so a model that rewrote one file six times is
+  // reported as one file. An empty path names no file and so never collapses.
+  function uniqueActions(shapes, paths) {
+    const lastOf = new Map();
+    shapes.forEach((s, i) => {
+      if (s.wrote && paths[i]) lastOf.set(paths[i], i);
+    });
+    return shapes.map((s, i) => i).filter((i) => !shapes[i].wrote || !paths[i] || lastOf.get(paths[i]) === i);
+  }
+
+  function revealText(short, full, body) {
+    if (short === full) return body;
+    if (!String(body || '').trim()) return full;
+    return full + '\n\n' + body;
   }
 
   // Mirrors fennec-ui/src/markdown.rs:attachment_subtitle — a file at the
@@ -525,7 +647,8 @@
     // Which blocks and rows are open lives in JS, not in the DOM this rebuild
     // throws away, so it has to be part of the key — otherwise opening a block
     // would compute the same timeline and paint nothing.
-    key += '#g' + Array.from(openGroups).sort().join(',');
+    key += '#g' + Array.from(groupState.entries()).sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([id, open]) => id + (open ? '1' : '0')).join(',');
     key += '#r' + Array.from(openGroupRows).sort().join(',');
     return key;
   }
@@ -557,13 +680,14 @@
 
     const ordered = task.msgs.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
     const folds = foldCalls(ordered, task.id);
+    // The newest run is the stretch the loop may still be inside, so its block is
+    // the one that opens on its own; the next answer starts a newer stretch and
+    // closes this one.
+    const starts = Array.from(folds.at.keys());
+    const newest = starts.length ? starts[starts.length - 1] : -1;
     for (let i = 0; i < ordered.length; i += 1) {
       const block = folds.at.get(i);
-      if (block) {
-        if (block.written.length) timeline.appendChild(renderGroup('written', block.id, '✎', block.written));
-        if (block.ran.length) timeline.appendChild(renderGroup('ran', block.id, '⚙', block.ran));
-        continue;
-      }
+      if (block) timeline.appendChild(renderGroup(block.id, block.rows, i === newest));
       if (folds.hidden.has(i)) continue;
       timeline.appendChild(renderMessage(ordered[i]));
     }
@@ -616,6 +740,9 @@
       case 'action': {
         const tm = toolMeta(meta.toolKind);
         const title = meta.title || tm.label;
+        // The header keeps the file's name or the command's first words; opening
+        // the card prints the whole call above whatever it has returned.
+        const short = shortText(meta.path || '', title);
         const status = meta.status || 'Complete';
         const dur = meta.duration ? ' · ' + meta.duration : '';
         const statusClass = status === 'Failed' ? 'failed' : status === 'Running' ? 'running' : 'complete';
@@ -624,14 +751,14 @@
         // Same placeholder the shared `action_card` draws: the running call is
         // kept out of the folded blocks so it can be watched, and an empty body
         // would make that toggle look dead.
-        const bodyText = m.content
+        const bodyText = revealText(short, title, m.content)
           || (status === 'Running' ? 'No output yet.' : 'This call returned no output.');
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header" data-toggle="1" role="button" tabindex="0" aria-expanded="${!m.collapsed}">
               <div class="message-avatar agent tool-avatar">${tm.icon}</div>
               <span class="message-author agent">${escapeHtml(m.author)}</span>
-              <span class="action-label">${escapeHtml(title)}</span>
+              <span class="action-label">${escapeHtml(short)}</span>
               <span class="chunk-hint">${escapeHtml(hint)}</span>
               <span class="message-status ${statusClass}">${escapeHtml(status)}${escapeHtml(dur)}</span>
               <span class="message-time">${time}</span>
@@ -645,14 +772,21 @@
       case 'attach': {
         const fn = meta.title || 'file';
         const badge = meta.badge || (meta.isImage ? 'IMG' : artifactBadge(fn));
-        const subtitle = meta.subtitle || attachmentSubtitle(meta.path || '', fn);
+        // The chip says everything the old "Delivered N files" paragraph said:
+        // where the file is, what the run did to it, and how big it came out.
+        const said = [meta.subtitle || attachmentSubtitle(meta.path || '', fn)];
+        if (meta.verb) said.push(meta.verb);
+        if (meta.size) said.push(meta.size);
+        if (meta.replaced != null && meta.verb && meta.verb !== 'created') {
+          said.push(meta.replaced + ' replacement' + (meta.replaced === 1 ? '' : 's'));
+        }
         wrap.innerHTML = `
           <div class="message-card">
             <div class="file-chip" role="button" tabindex="0" aria-label="Open ${escapeHtml(fn)}">
               <span class="file-chip-badge" aria-hidden="true">${escapeHtml(badge)}</span>
               <span class="file-chip-text">
                 <span class="file-chip-name">${escapeHtml(fn)}</span>
-                <span class="file-chip-sub">${escapeHtml(subtitle)}</span>
+                <span class="file-chip-sub">${escapeHtml(said.join(' · '))}</span>
               </span>
               <button class="file-chip-menu" type="button" aria-label="Actions for ${escapeHtml(fn)}">⋯</button>
             </div>
@@ -779,9 +913,10 @@
   }
 
   // ── Folded tool calls ──────────────────────────────────────────────────────
-  // Mirrors fennec-ui/src/timeline.rs. Every settled call of one run folds into
-  // two blocks — the files it wrote and the tools it ran — and only the call the
-  // run is still inside stays on its own, where its output can be watched.
+  // Mirrors fennec-ui/src/timeline.rs. Every action of one run — the files it
+  // wrote and the tools it ran, together — folds into one block, and only the
+  // call the run is still inside stays on its own, where its output can be
+  // watched.
   function foldsUp(m) {
     const d = m.meta || {};
     if (m.kind === 'action') return !!d.status && d.status !== 'Running';
@@ -798,36 +933,42 @@
       const start = i;
       let end = i;
       while (end < msgs.length && foldsUp(msgs[end])) end += 1;
-      const run = msgs.slice(start, end);
-      // The loop reports a successful write twice — once as the call, once as the
-      // delivered file — and one row per file is the whole point of the count.
-      const delivered = new Set(run.filter((m) => m.kind === 'attach').map((m) => (m.meta || {}).path || ''));
-      const written = [];
-      const ran = [];
-      for (const m of run) {
-        const w = writeOfTitle((m.meta || {}).title);
-        if (m.kind === 'action' && w && delivered.has(w.path)) continue;
-        (writeVerb(m) ? written : ran).push(m);
+      const calls = [];
+      for (let k = start; k < end; k += 1) {
+        // A delivered file is its own card below the block, so it is not also a
+        // row inside it; the block lists the calls that made the files.
+        if (msgs[k].kind !== 'attach') { calls.push(k); hidden.add(k); }
       }
-      for (let k = start; k < end; k += 1) hidden.add(k);
-      if (written.length || ran.length) at.set(start, { id: taskId + ':' + msgs[start].id, written, ran });
+      const shapes = calls.map((k) => ({ wrote: !!writeVerb(msgs[k]) }));
+      const paths = calls.map((k) => writtenPath(msgs[k]));
+      // Mirrors `unique_actions`: the rows the block holds, in the order the run
+      // made the calls, with one row per file it rewrote.
+      const rows = uniqueActions(shapes, paths).map((j) => msgs[calls[j]]);
+      if (rows.length) at.set(start, { id: taskId + ':' + msgs[start].id, rows });
       i = end;
     }
     return { hidden, at };
   }
 
-  // Open blocks survive the per-tick rebuild, which keeps no DOM.
-  const openGroups = new Set();
+  // Open blocks survive the per-tick rebuild, which keeps no DOM. What the user
+  // clicked is remembered as open or shut, so a click wins in both directions and
+  // the newest block still opens on its own.
+  const groupState = new Map();
   const openGroupRows = new Set();
 
-  function groupRowOf(m, kind) {
+  function isGroupOpen(blockId, newest) {
+    const held = groupState.get(blockId);
+    return held === undefined ? newest : held;
+  }
+
+  function groupRowOf(m) {
     const d = m.meta || {};
-    if (kind === 'written') {
-      const path = d.path || (writeOfTitle(d.title) || {}).path || '';
+    if (writeVerb(m)) {
+      const path = writtenPath(m);
       const name = baseName(d.title || path || 'file');
       return {
         icon: d.badge || artifactBadge(name),
-        label: path || d.title || name,
+        label: shortText(path, d.title || ''),
         status: writeVerb(m) || 'changed',
         adds: d.add || 0,
         dels: d.del || 0,
@@ -841,7 +982,7 @@
     const failed = d.status === 'Failed';
     return {
       icon: toolMeta(d.toolKind).icon,
-      label: d.title || toolMeta(d.toolKind).label,
+      label: shortText(d.path || '', d.title || toolMeta(d.toolKind).label),
       status: failed ? 'Failed' : (d.duration ? 'Complete · ' + d.duration : 'Complete'),
       adds: 0, dels: 0, failed,
       msg: m,
@@ -849,28 +990,23 @@
     };
   }
 
-  function renderGroup(kind, blockId, icon, msgs) {
-    const rows = msgs.map((m) => groupRowOf(m, kind));
+  function renderGroup(blockId, msgs, newest) {
+    const rows = msgs.map((m) => groupRowOf(m));
     const failed = rows.filter((r) => r.failed).length;
-    const title = kind === 'written'
-      ? 'Written ' + rows.length + ' file' + (rows.length === 1 ? '' : 's')
-      : 'Ran ' + rows.length + ' tool' + (rows.length === 1 ? '' : 's');
-    // Both blocks of one run are keyed by their first call, so the open state
-    // carries the kind too — otherwise opening "Written" opens "Ran" with it.
-    const openKey = kind + ':' + blockId;
-    const open = openGroups.has(openKey);
+    const title = rows.length + ' action' + (rows.length === 1 ? '' : 's');
+    const open = isGroupOpen(blockId, newest);
     const box = document.createElement('div');
     box.className = 'tool-group';
     box.innerHTML = `
       <div class="tool-group-header" role="button" tabindex="0" aria-expanded="${open}">
         <span class="group-chev">${open ? '▾' : '▸'}</span>
-        <span class="group-icon">${icon}</span>
+        <span class="group-icon">⚙</span>
         <span class="group-title">${escapeHtml(title)}</span>
         ${failed ? `<span class="group-failed">${failed} failed</span>` : ''}
       </div>`;
     const head = box.querySelector('.tool-group-header');
     const toggle = () => {
-      if (openGroups.has(openKey)) openGroups.delete(openKey); else openGroups.add(openKey);
+      groupState.set(blockId, !open);
       renderTimeline();
     };
     head.addEventListener('click', toggle);
@@ -881,7 +1017,7 @@
     const body = document.createElement('div');
     body.className = 'tool-group-body';
     for (const r of rows) {
-      const rowKey = openKey + ':' + r.msg.id;
+      const rowKey = blockId + ':' + r.msg.id;
       const rowOpen = openGroupRows.has(rowKey);
       const row = document.createElement('div');
       row.className = 'group-row' + (r.failed ? ' failed' : '') + (rowOpen ? ' open' : '');
@@ -896,7 +1032,10 @@
       const detail = document.createElement('div');
       detail.className = 'group-row-detail mono-body';
       const text = (r.msg.content || '').trim() || (r.msg.meta || {}).diff || '';
-      detail.textContent = text || 'No output was captured for this call.';
+      // Opening a row prints the whole path or command above what the call
+      // returned; the folded label only ever carried a name or seven words.
+      const full = (r.msg.meta || {}).path || (r.msg.meta || {}).title || '';
+      detail.textContent = revealText(r.label, full, text) || 'No output was captured for this call.';
       const activate = () => {
         if (r.opens === 'text') {
           if (openGroupRows.has(rowKey)) openGroupRows.delete(rowKey); else openGroupRows.add(rowKey);
@@ -1431,12 +1570,17 @@
     // opening one later has to name it back to the file route.
     task.backendWs = typeof j.workspace === 'string' ? j.workspace : '';
     task.core = true;
+    // One generation per run. The stream and plan messages are rewritten in
+    // place while a run is live, so they are only reusable inside their own
+    // run — otherwise a second message in the same task would overwrite the
+    // first run's answer.
+    task.runGen = (task.runGen || 0) + 1;
   }
 
   function coreStreamMsg(task) {
-    let m = task.msgs.find((x) => x.kind === 'result' && x.meta && x.meta.coreStream);
+    let m = task.msgs.find((x) => x.kind === 'result' && x.meta && x.meta.coreStream && x.meta.gen === task.runGen);
     if (!m) {
-      m = pushMsg(task, { author: 'Fennec', content: '', kind: 'result', collapsed: false, meta: { coreStream: true, stream: true } });
+      m = pushMsg(task, { author: 'Fennec', content: '', kind: 'result', collapsed: false, meta: { coreStream: true, stream: true, gen: task.runGen } });
     }
     return m;
   }
@@ -1449,12 +1593,20 @@
     if (!verb) return;
     const rel = (s.args && typeof s.args.path === 'string') ? s.args.path.trim() : '';
     if (!rel) return;
-    const key = 'deliver:' + (s.call_id || s.id || (s.name + ':' + rel));
-    if (task.msgs.some((x) => x.meta && x.meta.deliveryKey === key)) return;
+    // One card per file, not per call: a run that rewrote the same file six times
+    // delivered one file, and the card carries the last write's numbers.
+    const key = 'deliver:' + rel;
     const result = s.result || {};
     const name = baseName(rel);
     const bytes = typeof result.bytes === 'number' ? result.bytes : '';
     const replaced = typeof result.replaced === 'number' ? result.replaced : null;
+    const again = task.msgs.find((x) => x.meta && x.meta.deliveryKey === key);
+    if (again) {
+      again.meta.verb = verb;
+      again.meta.replaced = replaced;
+      if (bytes !== '') again.meta.size = formatFileSize(bytes);
+      return;
+    }
     pushMsg(task, {
       author: 'Fennec', content: '', kind: 'attach', collapsed: false,
       meta: {
@@ -1467,32 +1619,9 @@
     });
   }
 
-  // What the run changed, counted from the delivery cards themselves — the same
-  // list the timeline shows, so a summary cannot name a file the run never
-  // delivered, and a task resumed from history still reports its own writes.
-  function workSummary(task) {
-    const rows = [];
-    const seen = {};
-    for (const m of (task.msgs || [])) {
-      const mt = m.meta;
-      if (m.kind !== 'attach' || !mt || !mt.verb || !mt.path) continue;
-      const prev = seen[mt.path];
-      if (prev) { prev.count += 1; continue; }
-      seen[mt.path] = { path: mt.path, verb: mt.verb, size: mt.size, replaced: mt.replaced, count: 1 };
-      rows.push(seen[mt.path]);
-    }
-    if (!rows.length) return '';
-    let out = '**Delivered ' + rows.length + ' file' + (rows.length === 1 ? '' : 's') + '**\n\n';
-    for (const r of rows) {
-      const parts = [r.verb];
-      if (r.count > 1) parts.push(r.count + '×');
-      if (r.size) parts.push(r.size);
-      if (r.replaced != null && r.verb !== 'created') parts.push(r.replaced + ' replacement' + (r.replaced === 1 ? '' : 's'));
-      out += '- `' + r.path + '` — ' + parts.join(', ') + '\n';
-    }
-    return out;
-  }
-
+  // What the run changed is the chips themselves, one per delivered file, each
+  // naming what happened to it. A prose list above them would repeat, in worse
+  // type, what the card already says — and the card is the thing you can open.
   function applyCoreStep(task, s, thinkId) {
     const kind = s.type;
     if (kind === 'partial') {
@@ -1502,18 +1631,12 @@
     } else if (kind === 'assistant' || kind === 'final') {
       const m = coreStreamMsg(task);
       m.content = s.content || m.content;
-      if (kind === 'final') {
-        m.meta.stream = false;
-        const sum = workSummary(task);
-        if (sum && m.content.indexOf('**Delivered ') === -1) {
-          m.content = m.content.replace(/\s+$/, '') + '\n\n' + sum;
-        }
-      }
+      if (kind === 'final') m.meta.stream = false;
       if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
     } else if (kind === 'plan') {
       const text = (s.entries || []).map((e) => (e.status === 'completed' ? '✓ ' : '• ') + e.content).join('\n');
-      let m = task.msgs.find((x) => x.kind === 'think' && x.meta && x.meta.corePlan);
-      if (!m) m = pushMsg(task, { author: 'Fennec', content: text, kind: 'think', collapsed: true, meta: { corePlan: true } });
+      let m = task.msgs.find((x) => x.kind === 'think' && x.meta && x.meta.corePlan && x.meta.gen === task.runGen);
+      if (!m) m = pushMsg(task, { author: 'Fennec', content: text, kind: 'think', collapsed: true, meta: { corePlan: true, gen: task.runGen } });
       else m.content = text;
     } else if (kind === 'tool_start') {
       const id = s.id || s.call_id || s.name;
