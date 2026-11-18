@@ -1,5 +1,9 @@
 use fennec_client::coding_agent::CodingAgentClient;
 
+use fennec_ui::markdown::{artifact_kind, rich_div};
+use fennec_ui::theme::{find_preset_index, theme_presets};
+use fennec_ui::widgets::{action_card, ai_header, attachment_card, edit_card, queue_strip, speak_tts, user_bubble};
+use fennec_ui::workspace_dialog::open_workspace_dialog;
 use gpui_kit::base::Root;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable, WindowExt,
@@ -12,7 +16,6 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui::hsla;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,109 +23,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
-struct ThemePreset {
-    name: &'static str,
-    mode: ThemeMode,
-    accent: [f32; 4],
-    background: [f32; 4],
-    muted: [f32; 4],
-    border: [f32; 4],
-    theme_id: &'static str,
-}
-
-impl ThemePreset {
-    fn apply(&self, cx: &mut gpui::App) {
-        Theme::update(cx, |theme| {
-            theme.mode = self.mode;
-            theme.colors.accent = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
-            theme.colors.primary = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
-            theme.colors.button_primary = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
-            theme.colors.link = hsla(self.accent[0], self.accent[1], self.accent[2], self.accent[3]);
-            theme.colors.background = hsla(self.background[0], self.background[1], self.background[2], self.background[3]);
-            theme.colors.muted = hsla(self.muted[0], self.muted[1], self.muted[2], self.muted[3]);
-            theme.colors.border = hsla(self.border[0], self.border[1], self.border[2], self.border[3]);
-        });
-    }
-
-    fn id(&self) -> &str {
-        self.theme_id
-    }
-}
-
 const WARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
-
-fn theme_presets() -> Vec<ThemePreset> {
-    vec![
-        // Dark: neutral gray background
-        ThemePreset {
-            name: "Dark", mode: ThemeMode::Dark,
-            accent: [210.0/360.0, 0.5, 0.5, 1.0],
-            background: [0.0, 0.0, 0.08, 1.0],
-            muted: [0.0, 0.0, 0.12, 1.0],
-            border: [0.0, 0.0, 0.18, 1.0],
-            theme_id: "dark",
-        },
-        // Light: white background
-        ThemePreset {
-            name: "Light", mode: ThemeMode::Light,
-            accent: [210.0/360.0, 0.5, 0.5, 1.0],
-            background: [0.0, 0.0, 0.98, 1.0],
-            muted: [0.0, 0.0, 0.94, 1.0],
-            border: [0.0, 0.0, 0.88, 1.0],
-            theme_id: "light",
-        },
-        // Ocean: deep blue background
-        ThemePreset {
-            name: "Ocean", mode: ThemeMode::Dark,
-            accent: [55.0/360.0, 0.7, 0.5, 1.0],
-            background: [0.6, 0.4, 0.08, 1.0],
-            muted: [0.6, 0.35, 0.12, 1.0],
-            border: [0.6, 0.3, 0.2, 1.0],
-            theme_id: "ocean",
-        },
-        // Forest: dark green background
-        ThemePreset {
-            name: "Forest", mode: ThemeMode::Dark,
-            accent: [35.0/360.0, 0.6, 0.45, 1.0],
-            background: [0.33, 0.3, 0.06, 1.0],
-            muted: [0.33, 0.25, 0.1, 1.0],
-            border: [0.33, 0.2, 0.16, 1.0],
-            theme_id: "forest",
-        },
-        // Sunset: warm orange/red background
-        ThemePreset {
-            name: "Sunset", mode: ThemeMode::Dark,
-            accent: [10.0/360.0, 0.75, 0.55, 1.0],
-            background: [0.05, 0.5, 0.08, 1.0],
-            muted: [0.05, 0.45, 0.12, 1.0],
-            border: [0.05, 0.4, 0.2, 1.0],
-            theme_id: "sunset",
-        },
-        // Lavender: purple background
-        ThemePreset {
-            name: "Lavender", mode: ThemeMode::Dark,
-            accent: [75.0/360.0, 0.55, 0.6, 1.0],
-            background: [0.75, 0.3, 0.08, 1.0],
-            muted: [0.75, 0.25, 0.12, 1.0],
-            border: [0.75, 0.2, 0.2, 1.0],
-            theme_id: "lavender",
-        },
-        // Coffee: warm brown background
-        ThemePreset {
-            name: "Coffee", mode: ThemeMode::Dark,
-            accent: [30.0/360.0, 0.6, 0.65, 1.0],
-            background: [0.07, 0.5, 0.1, 1.0],
-            muted: [0.07, 0.45, 0.15, 1.0],
-            border: [0.07, 0.4, 0.22, 1.0],
-            theme_id: "coffee",
-        },
-    ]
-}
-
-fn find_preset_index(theme_id: &str) -> usize {
-    theme_presets().iter().position(|p| p.id() == theme_id).unwrap_or(0)
-}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Msg {
@@ -307,243 +208,6 @@ enum BackendResponse {
     Failed(String),
     BackendInfo { names: Vec<String>, healthy: bool },
     Stt(String),
-}
-
-// ---- Rich markdown rendering ----
-
-#[derive(Clone, PartialEq, Debug)]
-enum Block {
-    Prose(String),
-    Code { lang: String, body: String },
-}
-
-fn rich_blocks(text: &str) -> Vec<Block> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(open) = rest.find("```") {
-        let before = &rest[..open];
-        if !before.trim().is_empty() {
-            out.push(Block::Prose(before.trim().to_string()));
-        }
-        let after = &rest[open + 3..];
-        let (body, tail) = match after.find("```") {
-            Some(end) => (&after[..end], &after[end + 3..]),
-            None => (after, ""),
-        };
-        let body = body.trim();
-        let (lang, code) = match body.split_once('\n') {
-            Some((first, code)) => match info_string(first) {
-                Some(lang) => (lang.to_string(), code.trim().to_string()),
-                None => (String::new(), body.to_string()),
-            },
-            None => (String::new(), body.to_string()),
-        };
-        out.push(Block::Code { lang, body: code });
-        rest = tail;
-    }
-    if !rest.trim().is_empty() {
-        out.push(Block::Prose(rest.trim().to_string()));
-    }
-    out
-}
-
-fn info_string(line: &str) -> Option<&str> {
-    let t = line.trim();
-    (!t.is_empty()
-        && t.len() <= 16
-        && t.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_' | '.')))
-        .then_some(t)
-}
-
-#[derive(Clone, PartialEq, Debug)]
-enum Run {
-    Text(String),
-    Code(String),
-    Strong(String),
-    Em(String),
-    Link { label: String, url: String },
-}
-
-#[derive(Clone, PartialEq, Debug)]
-struct MdLine {
-    head: u8,
-    bullet: bool,
-    runs: Vec<Run>,
-}
-
-fn md_lines(text: &str) -> Vec<MdLine> {
-    let mut out = Vec::new();
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let hashes = line.chars().take_while(|c| *c == '#').count();
-        let (head, body) = if hashes > 0 && hashes <= 4 && line[hashes..].starts_with(' ') {
-            (hashes as u8, line[hashes..].trim_start())
-        } else {
-            (0u8, line)
-        };
-        let mut bullet = false;
-        let mut rest = body;
-        for m in ["- ", "* ", "+ "] {
-            if let Some(r) = rest.strip_prefix(m) {
-                bullet = true;
-                rest = r;
-                break;
-            }
-        }
-        out.push(MdLine { head, bullet, runs: md_runs(rest) });
-    }
-    out
-}
-
-fn md_runs(text: &str) -> Vec<Run> {
-    let mut runs: Vec<Run> = Vec::new();
-    let mut buf = String::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let mut best: Option<(usize, usize, u8)> = None;
-        for (idx, len, kind) in [
-            (rest.find('`'), 1usize, 1u8),
-            (rest.find("**"), 2, 2),
-            (rest.find('*'), 1, 3),
-            (rest.find('['), 1, 4),
-        ] {
-            let Some(i) = idx else { continue };
-            let wins = match best {
-                None => true,
-                Some((bi, bl, _)) => i < bi || (i == bi && len > bl),
-            };
-            if wins {
-                best = Some((i, len, kind));
-            }
-        }
-        let Some((at, open_len, kind)) = best else {
-            buf.push_str(rest);
-            break;
-        };
-        buf.push_str(&rest[..at]);
-        rest = &rest[at..];
-        if kind == 4 {
-            match md_link(rest) {
-                Some((label, url, used)) => {
-                    if !buf.is_empty() {
-                        runs.push(Run::Text(std::mem::take(&mut buf)));
-                    }
-                    runs.push(Run::Link { label, url });
-                    rest = &rest[used..];
-                }
-                None => {
-                    buf.push('[');
-                    rest = &rest[1..];
-                }
-            }
-            continue;
-        }
-        let close_len = open_len;
-        let body = &rest[open_len..];
-        match body.find(&rest[..close_len]) {
-            Some(end) if end > 0 => {
-                if !buf.is_empty() {
-                    runs.push(Run::Text(std::mem::take(&mut buf)));
-                }
-                let text = body[..end].to_string();
-                runs.push(match kind {
-                    1 => Run::Code(text),
-                    2 => Run::Strong(text),
-                    _ => Run::Em(text),
-                });
-                rest = &rest[open_len + end + close_len..];
-            }
-            _ => {
-                buf.push_str(&rest[..open_len]);
-                rest = &rest[open_len..];
-            }
-        }
-    }
-    if !buf.is_empty() {
-        runs.push(Run::Text(buf));
-    }
-    runs
-}
-
-fn md_link(s: &str) -> Option<(String, String, usize)> {
-    let after = s.strip_prefix('[')?;
-    let split = after.find("](")?;
-    let label = &after[..split];
-    let tail = &after[split + 2..];
-    let end = tail.find(')')?;
-    Some((label.to_string(), tail[..end].to_string(), 1 + split + 2 + end + 1))
-}
-
-fn rich_div(t: &Theme, text: &str, dim: bool) -> Div {
-    let base = if dim { 12.0 } else { 13.5 };
-    let mut col = div().flex().flex_col().gap_2().max_w(px(680.0));
-    for (bi, b) in rich_blocks(text).into_iter().enumerate() {
-        col = col.child(div().id(ElementId::NamedInteger("blk".into(), bi as u64)).child(match b {
-            Block::Prose(p) => md_div(t, &p, base, dim),
-            Block::Code { lang, body } => code_block(t, &lang, &body),
-        }));
-    }
-    col
-}
-
-fn md_div(t: &Theme, text: &str, base: f32, dim: bool) -> Div {
-    let mut col = div().flex().flex_col().gap_1();
-    for (li, line) in md_lines(text).into_iter().enumerate() {
-        if line.runs.is_empty() {
-            continue;
-        }
-        let size = base + match line.head { 1 => 6.0, 2 => 3.5, 3 => 1.5, _ => 0.0 };
-        let body = if line.head > 0 { t.foreground } else if dim { t.muted_foreground } else { t.foreground };
-        let mut row = div().id(ElementId::NamedInteger("mdl".into(), li as u64)).flex().flex_row().flex_wrap().items_center();
-        if line.bullet {
-            row = row.child(div().flex_shrink_0().child(Label::new("•").text_size(px(size)).text_color(body)));
-        }
-        for (ri, run) in line.runs.iter().enumerate() {
-            row = row.child(run_div(t, run, size, body, line.head > 0, ri));
-        }
-        col = col.child(row);
-    }
-    col
-}
-
-fn run_div(t: &Theme, run: &Run, size: f32, body: Hsla, heading: bool, idx: usize) -> impl IntoElement {
-    let id = ElementId::NamedInteger("mdr".into(), idx as u64);
-    match run {
-        Run::Text(s) => {
-            let mut l = Label::new(s.clone()).text_size(px(size)).text_color(body);
-            if heading {
-                l = l.font_weight(FontWeight::SEMIBOLD);
-            }
-            div().id(id).child(l)
-        }
-        Run::Strong(s) => div().id(id).child(
-            Label::new(s.clone()).text_size(px(size)).text_color(t.foreground).font_weight(FontWeight::SEMIBOLD)
-        ),
-        Run::Em(s) => div().id(id).italic().child(Label::new(s.clone()).text_size(px(size)).text_color(body)),
-        Run::Code(s) => div().id(id).rounded_md().bg(t.muted).px_1().font_family("monospace").child(
-            Label::new(s.clone()).text_size(px((size - 1.0).max(9.0))).text_color(t.foreground)
-        ),
-        Run::Link { label, url } => div().id(id).flex().flex_row().flex_wrap().items_center()
-            .child(Label::new(label.clone()).text_size(px(size)).text_color(t.primary))
-            .child(Label::new(format!(" ({url})")).font_family("monospace")
-                .text_size(px((size - 1.5).max(9.0))).text_color(t.muted_foreground)),
-    }
-}
-
-fn code_block(t: &Theme, lang: &str, code: &str) -> Div {
-    let mut col = div().flex().flex_col().gap_1().max_w(px(680.0))
-        .rounded_md().border_1().border_color(t.border).bg(t.muted).px_3().py_2();
-    if !lang.is_empty() {
-        col = col.child(div().font_family("monospace")
-            .child(Label::new(lang.to_string()).text_size(px(10.0)).text_color(t.muted_foreground)));
-    }
-    col = col.child(div().font_family("monospace").max_h(px(240.0)).overflow_y_scrollbar()
-        .child(Label::new(code.to_string()).text_size(px(12.0)).text_color(t.foreground)));
-    col
 }
 
 impl App {
@@ -1229,23 +893,6 @@ impl App {
         });
     }
 
-    fn speak_tts(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if text.is_empty() { return; }
-        let text = text.to_string();
-        std::thread::spawn(move || {
-            #[cfg(target_os = "windows")]
-            {
-                let script = format!("Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{}')", text.replace("'", "''"));
-                let _ = std::process::Command::new("powershell").args(["-Command", &script]).output();
-            }
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("say").arg(&text).output();
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("espeak").arg(&text).output();
-        });
-        window.push_notification(Notification::info("Speaking…"), cx);
-    }
-
     fn remove_from_queue(&mut self, idx: usize) {
         if idx < self.queued.len() {
             self.queued.remove(idx);
@@ -1693,8 +1340,14 @@ impl App {
                     .child(Label::new("ⓘ").text_size(px(10.0)).text_color(t.muted_foreground)))
                 .child(Button::new("new-workspace-header").label("+").w(px(24.0)).h(px(24.0)).rounded_md()
                     .border_1().border_color(t.border)
-                    .on_click(cx.listener(|a, _, window, cx| {
-                        a.open_new_workspace_dialog(window, cx);
+                    .on_click(cx.listener(|_a, _, window, cx| {
+                        let weak = cx.entity().downgrade();
+                        open_workspace_dialog(window, cx, move |name, folders, icon, color, indexed, cx| {
+                            let _ = weak.update(cx, |a, cx| {
+                                a.add_workspace(name, folders, icon, color, indexed);
+                                cx.notify();
+                            });
+                        });
                     })))
             )
             // Workspace List with Tasks
@@ -1847,169 +1500,115 @@ impl App {
     fn timeline(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let msgs = self.task().map(|t| t.msgs.clone()).unwrap_or_default();
-        div().id("timeline-scroll").flex_1().track_scroll(&self.scroll_handle).overflow_y_scrollbar().px_5().py_3().flex().flex_col().gap_4()
-            .children(msgs.into_iter().map(|m| {
-                let t = t.clone();
-                let id = m.id;
-                match m.kind {
-                    MsgKind::User => div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                        .child(self.avatar("L", t.primary))
-                        .child(div().flex().flex_col().gap_1().max_w(px(680.0))
-                            .child(div().flex().items_center().gap_2()
-                                .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground)))
-                            .child(div().p_3().rounded_md().bg(t.muted).child(Label::new(&m.content)))),
-
-                    MsgKind::Think => {
-                        let collapsed = m.collapsed;
-                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                            .child(self.avatar("F", t.accent))
-                            .child(div().flex().flex_col().gap_1().flex_1()
-                                .child(div().flex().items_center().gap_2()
-                                    .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                    .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground))
-                                    .child(Label::new("Thinking").text_size(px(12.0)).text_color(t.green))
-                                    .child(Button::new(ElementId::NamedInteger("tog".into(), id))
-                                        .label(if collapsed { "+" } else { "-" }).ghost().xsmall()
-                                        .on_click(cx.listener(move |a, _, _, cx| { a.toggle(id); cx.notify(); }))))
-                                .children((!collapsed).then(|| div().text_size(px(13.0)).text_color(t.muted_foreground).child(Label::new(&m.content)))))
-                    }
-
-                    MsgKind::Action => {
-                        let collapsed = m.collapsed;
-                        let title = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into());
-                        let dur = m.meta.as_ref().and_then(|x| x.duration.clone()).unwrap_or_default();
-                        let running = dur.is_empty();
-                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                            .child(self.avatar("A", t.accent))
-                            .child(div().flex().flex_col().gap_1().flex_1()
-                                .child(div().flex().items_center().justify_between()
-                                    .child(div().flex().items_center().gap_2()
-                                        .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                        .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground)))
-                                    .child(Button::new(ElementId::NamedInteger("tog".into(), id))
-                                        .label(if collapsed { "+" } else { "-" }).ghost().xsmall()
-                                        .on_click(cx.listener(move |a, _, _, cx| { a.toggle(id); cx.notify(); }))))
-                                .child(div().rounded_md().border_1().border_color(t.border)
-                                    .child(div().flex().items_center().justify_between().px_3().py_2().border_b_1().border_color(t.border)
-                                        .child(div().flex().items_center().gap_2().child(Label::new("🔍")).child(Label::new(title).font_weight(FontWeight::MEDIUM)))
-                                        .child(Label::new(if running { "Running…".into() } else { format!("Complete · {dur}") }).text_size(px(12.0)).text_color(if running { t.yellow } else { t.green })))
-                                    .children((!collapsed && !m.content.is_empty()).then(|| div().px_3().py_2().text_size(px(12.0)).font_family("monospace").child(Label::new(&m.content))))))
-                    }
-
-                    MsgKind::Attach => {
-                        let fn_ = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
-                        let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
-                        let size = m.meta.as_ref().and_then(|x| x.size.clone()).unwrap_or_default();
-                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                            .child(self.avatar("F", t.accent))
-                            .child(div().flex().flex_col().gap_1().flex_1()
-                                .child(div().flex().items_center().gap_2()
-                                    .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                    .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground)))
-                                .child(div().rounded_md().border_1().border_color(t.border).px_3().py_2()
-                                    .child(div().flex().items_center().justify_between()
-                                        .child(div().flex().items_center().gap_2().child(Label::new("📄"))
-                                            .child(div().flex().flex_col()
-                                                .child(Label::new(fn_).font_weight(FontWeight::MEDIUM))
-                                                .child(Label::new(format!("{} · Attached file", path)).text_size(px(11.0)).text_color(t.muted_foreground))))
-                                        .child(Label::new(size).text_size(px(12.0))))))
-                    }
-
-                    MsgKind::Edit => {
-                        let fn_ = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
-                        let add = m.meta.as_ref().and_then(|x| x.add).unwrap_or(0);
-                        let del = m.meta.as_ref().and_then(|x| x.del).unwrap_or(0);
-                        let m2 = m.clone();
-                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                            .child(self.avatar("F", t.accent))
-                            .child(div().flex().flex_col().gap_1().flex_1()
-                                .child(div().flex().items_center().gap_2()
-                                    .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                    .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground))
-                                    .child(Label::new("Edited 1 file").text_size(px(12.0)).text_color(t.muted_foreground))
-                                    .child(Button::new(ElementId::NamedInteger("review".into(), id))
-                                        .label("Review").ghost().small()
-                                        .on_click(cx.listener(move |_, _, window, cx| {
-                                            let m = m2.clone();
-                                            window.open_dialog(cx, move |dialog, _, _| {
-                                                let m = m.clone();
-                                                dialog.title("Review diff").content(move |content, _, _| {
-                                                    let m = m.clone();
-                                                    content.child(div().max_h(px(480.0)).overflow_y_scrollbar()
-                                                        .child(div().font_family("monospace").text_size(px(12.0)).child(Label::new(m.content))))
-                                                })
-                                            });
-                                        }))))
-                                .child(div().rounded_md().border_1().border_color(t.border)
-                                    .child(div().flex().items_center().justify_between().px_3().py_2()
-                                        .child(Label::new(fn_).text_size(px(12.0)).font_family("monospace"))
-                                        .child(div().flex().items_center().gap_2()
-                                            .child(Label::new(format!("+{add}")).text_size(px(12.0)).text_color(t.green))
-                                            .child(Label::new(format!("-{del}")).text_size(px(12.0)).text_color(t.red))))))
-                    }
-
-                    MsgKind::Result => {
-                        let speak = m.content.clone();
-                        div().id(ElementId::NamedInteger("msg".into(), id)).flex().gap_3()
-                        .child(self.avatar("F", t.success))
-                        .child(div().flex().flex_col().gap_1().max_w(px(680.0))
-                            .child(div().flex().items_center().gap_2()
-                                .child(Label::new(&m.author).font_weight(FontWeight::SEMIBOLD))
-                                .child(Label::new(&m.time).text_size(px(12.0)).text_color(t.muted_foreground))
-                                .child(Button::new(ElementId::NamedInteger("tts".into(), id)).ghost().xsmall()
-                                    .child(Label::new("🔊").text_size(px(12.0)).text_color(t.muted_foreground))
-                                    .on_click(cx.listener(move |a, _, window, cx| { a.speak_tts(&speak, window, cx); }))))
-                            .child(rich_div(&t, &m.content, false)))
-                    }
+        let weak = cx.entity().downgrade();
+        let mut list = div().id("timeline-scroll").flex_1().track_scroll(&self.scroll_handle).overflow_y_scrollbar().px_5().py_3().flex().flex_col().gap_4();
+        for m in msgs {
+            let id = m.id;
+            match m.kind {
+                MsgKind::User => {
+                    // The user's own words sit on the right in a bubble: no
+                    // avatar, no header, just the message.
+                    list = list.child(user_bubble(&t, &m.content, id as usize));
                 }
-            }))
-    }
-
-    fn avatar(&self, letter: &str, bg: Hsla) -> impl IntoElement {
-        div().w(px(28.0)).h(px(28.0)).rounded_full().bg(bg).flex().items_center().justify_center().flex_shrink_0()
-            .child(Label::new(letter).text_size(px(12.0)).text_color(Hsla::white()))
+                MsgKind::Think => {
+                    // Thoughts are collapsed by default; click to expand.
+                    let collapsed = m.collapsed;
+                    let weak2 = weak.clone();
+                    let header = ai_header(&t, id, &m.time, None::<fn(&mut Window, &mut gpui::App)>)
+                        .child(Label::new("Thinking").text_size(px(10.5)).text_color(t.green))
+                        .child(Label::new(if collapsed { "▸" } else { "▾" }).text_size(px(11.0)).text_color(t.muted_foreground))
+                        .id(ElementId::NamedInteger("think-h".into(), id))
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            let _ = weak2.update(cx, |a, cx| { a.toggle(id); cx.notify(); });
+                        });
+                    let mut block = div().id(ElementId::NamedInteger("msg".into(), id))
+                        .flex().flex_col().gap_1()
+                        .child(header);
+                    if !collapsed {
+                        block = block.child(rich_div(&t, &m.content, true, id as usize));
+                    }
+                    list = list.child(block);
+                }
+                MsgKind::Action => {
+                    let title = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into());
+                    let dur = m.meta.as_ref().and_then(|x| x.duration.clone()).unwrap_or_default();
+                    let running = dur.is_empty();
+                    let status_text = if running { "Running…".to_string() } else { format!("Complete · {dur}") };
+                    let status_color = if running { t.yellow } else { t.green };
+                    let collapsed = m.collapsed;
+                    let weak2 = weak.clone();
+                    list = list.child(action_card(&t, id, "🔍", &title, &m.content, &status_text, status_color, !collapsed,
+                        move |_, cx| {
+                            let _ = weak2.update(cx, |a, cx| { a.toggle(id); cx.notify(); });
+                        }));
+                }
+                MsgKind::Attach => {
+                    let name = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
+                    let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
+                    let size = m.meta.as_ref().and_then(|x| x.size.clone()).unwrap_or_default();
+                    let dir = std::path::Path::new(&path).parent()
+                        .map(|d| d.to_string_lossy().to_string())
+                        .filter(|d| !d.is_empty())
+                        .unwrap_or_else(|| ".".into());
+                    let kind = artifact_kind(&name);
+                    let trailing = if size.is_empty() { "…".to_string() } else { size };
+                    list = list.child(attachment_card(&t, id, &name, &format!("{dir} · {kind}"), &trailing,
+                        None::<fn(&mut Window, &mut gpui::App)>));
+                }
+                MsgKind::Edit => {
+                    let add = m.meta.as_ref().and_then(|x| x.add).unwrap_or(0);
+                    let del = m.meta.as_ref().and_then(|x| x.del).unwrap_or(0);
+                    let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
+                    let detail = m.content.clone();
+                    let collapsed = m.collapsed;
+                    let weak2 = weak.clone();
+                    let review_text = m.content.clone();
+                    list = list.child(edit_card(&t, id, "Edited 1 file", add, del, &path, &detail, !collapsed,
+                        move |_, cx| {
+                            let _ = weak2.update(cx, |a, cx| { a.toggle(id); cx.notify(); });
+                        },
+                        move |window, cx| {
+                            let review_text = review_text.clone();
+                            window.open_dialog(cx, move |dialog, _, _| {
+                                let review_text = review_text.clone();
+                                dialog.title("Review diff").content(move |content, _, _| {
+                                    content.child(div().max_h(px(480.0)).overflow_y_scrollbar()
+                                        .child(div().font_family("monospace").text_size(px(12.0))
+                                            .child(Label::new(review_text.clone()))))
+                                })
+                            });
+                        }));
+                }
+                MsgKind::Result => {
+                    let speak = m.content.clone();
+                    let header = ai_header(&t, id, &m.time, Some(move |window: &mut Window, cx: &mut gpui::App| {
+                        speak_tts(&speak, window, cx);
+                    }));
+                    list = list.child(div().id(ElementId::NamedInteger("msg".into(), id))
+                        .flex().flex_col().gap_1()
+                        .child(header)
+                        .child(rich_div(&t, &m.content, false, id as usize)));
+                }
+            }
+        }
+        list
     }
 
     fn queue(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        let len = self.queued.len();
-        if len == 0 {
+        if self.queued.is_empty() {
             return div().into_any_element();
         }
-
-        let header = div().flex().items_center().justify_between().px_4().py_2()
-            .child(div().flex().items_center().gap_2()
-                .child(Label::new("☰").text_size(px(14.0)).text_color(t.muted_foreground))
-                .child(Label::new("Task queue").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                .child(Label::new(format!("{len} item{}", if len == 1 { "" } else { "s" })).text_size(px(11.0)).text_color(t.muted_foreground)))
-            .child(Button::new("queue-view-all").label("View all").ghost().xsmall()
-                .on_click(cx.listener(|a, _, window, cx| {
-                    window.push_notification(gpui_kit::component::notification::Notification::info(
-                        format!("{} tasks in queue", a.queued.len())
-                    ), cx);
-                    cx.notify();
-                })));
-
-        let items = div().flex().flex_col().gap_0().overflow_y_scrollbar().max_h(px(120.0))
-            .children(self.queued.iter().enumerate().map(|(i, task)| {
-                let is_next = i == 0;
-                div().id(ElementId::NamedInteger("queue-item".into(), i as u64))
-                    .flex().items_center().justify_between().px_4().py_1_5()
-                    .child(div().flex().items_center().gap_2()
-                        .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(if is_next { t.success } else { t.muted_foreground }))
-                        .child(Label::new(task.clone()).text_size(px(12.0)).truncate()))
-                    .child(Label::new(if is_next { "Next" } else { "Queued" }).font_weight(FontWeight::SEMIBOLD).text_size(px(10.5))
-                        .text_color(if is_next { t.success } else { t.muted_foreground }))
-            }));
-
-        div().border_t_1().border_color(t.border).bg(t.background).flex().flex_col()
-            .child(header)
-            .child(items)
-            .into_any_element()
-    }
-
-    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let items = self.queued.clone();
+        let weak = cx.entity().downgrade();
+        queue_strip(&t, &items, move |window, cx| {
+            if let Some(app) = weak.upgrade() {
+                let n = app.read(cx).queued.len();
+                window.push_notification(Notification::info(format!("{n} tasks in queue")), cx);
+            }
+        }).into_any_element()
+    }    fn composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let send_enabled = !self.composer.read(cx).value().trim().is_empty();
         let mut col = div().border_t_1().border_color(t.border).bg(t.background).px_5().py_3().flex().flex_col().gap_2();
@@ -2136,186 +1735,6 @@ impl App {
                 }
             }
         }).detach();
-    }
-
-    fn open_new_workspace_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name_input = cx.new(|cx| {
-            let mut s = InputState::new(window, cx);
-            s
-        });
-        let weak = cx.entity().downgrade();
-
-        let icons = ["📁", "💻", "🔬", "🧪", "🎨", "🤖", "⚙️", "🔧", "📦", "🚀"];
-        let colors: [(f32, f32, f32); 8] = [
-            (0.08, 0.7, 0.5),   // orange
-            (0.33, 0.6, 0.45),  // green
-            (0.6, 0.5, 0.5),    // blue
-            (0.12, 0.8, 0.5),   // yellow
-            (0.0, 0.7, 0.5),    // red
-            (0.83, 0.6, 0.6),   // pink
-            (0.75, 0.5, 0.5),   // purple
-            (0.5, 0.6, 0.5),    // teal
-        ];
-
-        window.open_dialog(cx, move |dialog, _, _| {
-            let name_input = name_input.clone();
-            let weak = weak.clone();
-            let selected_icon: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-            let selected_color: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-            let indexed: Rc<Cell<bool>> = Rc::new(Cell::new(true));
-            let source_folders: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
-
-            dialog
-                .title("New Workspace")
-                .content({
-                    let name_input = name_input.clone();
-                    let weak = weak.clone();
-                    let selected_icon = selected_icon.clone();
-                    let selected_color = selected_color.clone();
-                    let indexed = indexed.clone();
-                    let source_folders = source_folders.clone();
-                    let icons = icons.to_vec();
-                    let colors = colors.to_vec();
-                    move |content, _window, cx| {
-                        let t = cx.theme().clone();
-                        content
-                            .flex().flex_col().gap_4()
-                            // Workspace name
-                            .child(div().flex().flex_col().gap_2()
-                                .child(Label::new("Workspace name").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                .child(Input::new(&name_input).h(px(32.0)))
-                            )
-                            // Source folders
-                            .child(div().flex().flex_col().gap_2()
-                                .child(Label::new("Source folders").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                .child(Button::new("add-folder-btn").w_full().justify_start()
-                                    .border_1().border_color(t.border).border_dashed()
-                                    .on_click({
-                                        let source_folders = source_folders.clone();
-                                        move |_, _, cx| {
-                                            let rx = cx.prompt_for_paths(PathPromptOptions {
-                                                files: false, directories: true, multiple: true, prompt: None,
-                                            });
-                                            let source_folders = source_folders.clone();
-                                            cx.spawn(async move |_weak| {
-                                                if let Ok(Ok(Some(paths))) = rx.await {
-                                                    let folder_paths: Vec<String> = paths.iter()
-                                                        .map(|p| p.to_string_lossy().to_string())
-                                                        .collect();
-                                                    source_folders.borrow_mut().extend(folder_paths);
-                                                }
-                                            }).detach();
-                                        }
-                                    })
-                                    .child(div().p_4().flex().items_center().justify_center()
-                                        .child(Label::new("+ Click to add a readable and editable folder")
-                                            .text_size(px(12.0)).text_color(t.muted_foreground))))
-                                .child({
-                                    let folders = source_folders.borrow().clone();
-                                    div().flex().flex_col().gap_1().mt_1()
-                                        .children(folders.iter().map(|f| {
-                                            let t = t.clone();
-                                            div().p_2().rounded_sm().bg(t.muted)
-                                                .child(Label::new(f.as_str()).text_size(px(11.0)).font_family("monospace").truncate())
-                                        }))
-                                })
-                            )
-                            // Workspace icon
-                            .child(div().flex().flex_col().gap_2()
-                                .child(Label::new("Workspace icon").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                .child(div().flex().flex_wrap().gap_2()
-                                    .children(icons.iter().enumerate().map(|(i, icon)| {
-                                        let t = t.clone();
-                                        let selected_icon = selected_icon.clone();
-                                        let is_selected = selected_icon.get() == i;
-                                        Button::new(format!("icon-{}", i))
-                                            .when(is_selected, |b| b.bg(t.accent.opacity(0.2)).border_color(t.accent))
-                                            .on_click(move |_, window, cx| {
-                                                selected_icon.set(i);
-                                                window.refresh();
-                                            })
-                                            .child(div().w(px(36.0)).h(px(36.0)).rounded_md()
-                                                .border_1().border_color(if is_selected { t.accent } else { t.border })
-                                                .flex().items_center().justify_center()
-                                                .child(Label::new(*icon).text_size(px(18.0))))
-                                    })))
-                            )
-                            // Workspace color
-                            .child(div().flex().flex_col().gap_2()
-                                .child(Label::new("Workspace color").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                .child(div().flex().gap_2()
-                                    .children(colors.iter().enumerate().map(|(i, color)| {
-                                        let t = t.clone();
-                                        let selected_color = selected_color.clone();
-                                        let is_selected = selected_color.get() == i;
-                                        let color_hsla = hsla(color.0, color.1, color.2, 1.0);
-                                        Button::new(format!("color-{}", i))
-                                            .on_click(move |_, window, cx| {
-                                                selected_color.set(i);
-                                                window.refresh();
-                                            })
-                                            .child(div().w(px(28.0)).h(px(28.0)).rounded_full()
-                                                .bg(color_hsla)
-                                                .border_2().border_color(if is_selected { t.foreground } else { Hsla::transparent_black() }))
-                                    })))
-                            )
-                            // Workspace index toggle
-                            .child(div().flex().items_center().justify_between().p_3().rounded_md().bg(t.muted).border_1().border_color(t.border)
-                                .child(div().flex().flex_col()
-                                    .child(Label::new("Workspace index").font_weight(FontWeight::SEMIBOLD).text_size(px(12.0)))
-                                    .child(Label::new("Building a workspace index gives the agent more context and helps it respond more accurately.")
-                                        .text_size(px(11.0)).text_color(t.muted_foreground)))
-                                .child({
-                                    let indexed = indexed.clone();
-                                    let is_on = indexed.get();
-                                    Button::new("index-toggle")
-                                        .on_click(move |_, window, cx| {
-                                            indexed.set(!indexed.get());
-                                            window.refresh();
-                                        })
-                                        .child(div().w(px(40.0)).h(px(22.0)).rounded_full()
-                                            .bg(if is_on { t.green } else { t.muted_foreground })
-                                            .flex().items_center()
-                                            .child(div().w(px(18.0)).h(px(18.0)).rounded_full().bg(Hsla::white())
-                                                .ml(if is_on { px(20.0) } else { px(2.0) })))
-                                })
-                            )
-                    }
-                })
-                .footer(div().flex().justify_end().gap_2().p_3()
-                    .child(Button::new("new-ws-cancel").label("Cancel").ghost()
-                        .on_click(|_, window, cx| { window.close_dialog(cx); }))
-                    .child(Button::new("new-ws-create").label("Create").primary()
-                        .on_click({
-                            let name_input = name_input.clone();
-                            let weak = weak.clone();
-                            let selected_icon = selected_icon.clone();
-                            let selected_color = selected_color.clone();
-                            let indexed = indexed.clone();
-                            let source_folders = source_folders.clone();
-                            let icons = icons.to_vec();
-                            move |_, window, cx| {
-                                let name = name_input.read(cx).value().trim().to_string();
-                                if name.is_empty() {
-                                    window.push_notification(Notification::error("Please enter a workspace name."), cx);
-                                    return;
-                                }
-                                let icon = icons[selected_icon.get()].to_string();
-                                let color_idx = selected_color.get();
-                                let color = match color_idx {
-                                    0 => "orange", 1 => "green", 2 => "blue", 3 => "yellow",
-                                    4 => "red", 5 => "pink", 6 => "purple", _ => "teal",
-                                }.to_string();
-                                let idx = indexed.get();
-                                let folders = source_folders.borrow().clone();
-                                let _ = weak.update(cx, |a, cx| {
-                                    a.add_workspace(name, folders, icon, color, idx);
-                                    cx.notify();
-                                });
-                                window.close_dialog(cx);
-                            }
-                        })))
-        });
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
