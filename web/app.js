@@ -359,6 +359,30 @@
   // category, so a read that mentions a path never shows up as a written file.
   const WRITE_TOOLS = { write_file: 'created', edit_file: 'updated' };
 
+  // Mirrors fennec-ui/src/attention.rs:write_of_title. A path may hold spaces
+  // (and even the separator), so only a leading `EDIT · ` badge is stripped and
+  // the file is everything after the word `file`.
+  function writeOfTitle(title) {
+    let t = String(title || '');
+    if (t.startsWith('EDIT · ')) t = t.slice('EDIT · '.length);
+    const verb = /^write\b/i.test(t) ? 'created' : /^edit\b/i.test(t) ? 'updated' : '';
+    if (!verb) return null;
+    const at = t.indexOf(' file ');
+    const path = at < 0 ? '' : t.slice(at + 6).trim();
+    return path ? { verb, path } : null;
+  }
+
+  // The verb a message's call used on a file, or '' when the call wrote nothing.
+  // A failed write wrote nothing, so it counts with the calls that merely ran.
+  function writeVerb(m) {
+    const d = m.meta || {};
+    if (m.kind === 'attach') return d.verb || '';
+    if (m.kind === 'edit') return d.verb || 'updated';
+    if (m.kind !== 'action') return '';
+    if (d.status === 'Running' || d.status === 'Failed') return '';
+    return WRITE_TOOLS[d.toolKind] || (writeOfTitle(d.title) || {}).verb || '';
+  }
+
   function extOf(name) {
     const dot = (name || '').lastIndexOf('.');
     return dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
@@ -498,6 +522,11 @@
         ':' + (d.status || '') + (d.decision || '') + (d.note || '') + ':' + (d.chunks || 0) +
         ':' + (d.duration || '') + ':' + (d.toolKind || '') + ':' + (d.stream ? 1 : 0);
     }
+    // Which blocks and rows are open lives in JS, not in the DOM this rebuild
+    // throws away, so it has to be part of the key — otherwise opening a block
+    // would compute the same timeline and paint nothing.
+    key += '#g' + Array.from(openGroups).sort().join(',');
+    key += '#r' + Array.from(openGroupRows).sort().join(',');
     return key;
   }
 
@@ -527,8 +556,16 @@
     timelineStatus.className = 'status-badge status-' + String(task.status || '').toLowerCase();
 
     const ordered = task.msgs.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    for (const m of ordered) {
-      timeline.appendChild(renderMessage(m));
+    const folds = foldCalls(ordered, task.id);
+    for (let i = 0; i < ordered.length; i += 1) {
+      const block = folds.at.get(i);
+      if (block) {
+        if (block.written.length) timeline.appendChild(renderGroup('written', block.id, '✎', block.written));
+        if (block.ran.length) timeline.appendChild(renderGroup('ran', block.id, '⚙', block.ran));
+        continue;
+      }
+      if (folds.hidden.has(i)) continue;
+      timeline.appendChild(renderMessage(ordered[i]));
     }
     if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
     else timeline.scrollTop = previousTop;
@@ -584,6 +621,11 @@
         const statusClass = status === 'Failed' ? 'failed' : status === 'Running' ? 'running' : 'complete';
         const lines = (m.content || '').split('\n').length;
         const hint = status === 'Running' ? 'running…' : lines + ' line' + (lines !== 1 ? 's' : '');
+        // Same placeholder the shared `action_card` draws: the running call is
+        // kept out of the folded blocks so it can be watched, and an empty body
+        // would make that toggle look dead.
+        const bodyText = m.content
+          || (status === 'Running' ? 'No output yet.' : 'This call returned no output.');
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header" data-toggle="1" role="button" tabindex="0" aria-expanded="${!m.collapsed}">
@@ -595,7 +637,7 @@
               <span class="message-time">${time}</span>
               <span class="collapse-indicator">${chevron(m)}</span>
             </div>
-            <div class="message-body mono-body">${escapeHtml(m.content)}</div>
+            <div class="message-body mono-body">${escapeHtml(bodyText)}</div>
           </div>`;
         break;
       }
@@ -734,6 +776,144 @@
     });
 
     return wrap;
+  }
+
+  // ── Folded tool calls ──────────────────────────────────────────────────────
+  // Mirrors fennec-ui/src/timeline.rs. Every settled call of one run folds into
+  // two blocks — the files it wrote and the tools it ran — and only the call the
+  // run is still inside stays on its own, where its output can be watched.
+  function foldsUp(m) {
+    const d = m.meta || {};
+    if (m.kind === 'action') return !!d.status && d.status !== 'Running';
+    if (m.kind === 'attach') return !!d.verb;
+    return m.kind === 'edit';
+  }
+
+  function foldCalls(msgs, taskId) {
+    const hidden = new Set();
+    const at = new Map();
+    let i = 0;
+    while (i < msgs.length) {
+      if (!foldsUp(msgs[i])) { i += 1; continue; }
+      const start = i;
+      let end = i;
+      while (end < msgs.length && foldsUp(msgs[end])) end += 1;
+      const run = msgs.slice(start, end);
+      // The loop reports a successful write twice — once as the call, once as the
+      // delivered file — and one row per file is the whole point of the count.
+      const delivered = new Set(run.filter((m) => m.kind === 'attach').map((m) => (m.meta || {}).path || ''));
+      const written = [];
+      const ran = [];
+      for (const m of run) {
+        const w = writeOfTitle((m.meta || {}).title);
+        if (m.kind === 'action' && w && delivered.has(w.path)) continue;
+        (writeVerb(m) ? written : ran).push(m);
+      }
+      for (let k = start; k < end; k += 1) hidden.add(k);
+      if (written.length || ran.length) at.set(start, { id: taskId + ':' + msgs[start].id, written, ran });
+      i = end;
+    }
+    return { hidden, at };
+  }
+
+  // Open blocks survive the per-tick rebuild, which keeps no DOM.
+  const openGroups = new Set();
+  const openGroupRows = new Set();
+
+  function groupRowOf(m, kind) {
+    const d = m.meta || {};
+    if (kind === 'written') {
+      const path = d.path || (writeOfTitle(d.title) || {}).path || '';
+      const name = baseName(d.title || path || 'file');
+      return {
+        icon: d.badge || artifactBadge(name),
+        label: path || d.title || name,
+        status: writeVerb(m) || 'changed',
+        adds: d.add || 0,
+        dels: d.del || 0,
+        failed: false,
+        msg: m,
+        // Only a delivered card knows how to read the file off disk; the call
+        // that made it has its result text, which is what the row shows inline.
+        opens: m.kind === 'attach' ? 'file' : 'text',
+      };
+    }
+    const failed = d.status === 'Failed';
+    return {
+      icon: toolMeta(d.toolKind).icon,
+      label: d.title || toolMeta(d.toolKind).label,
+      status: failed ? 'Failed' : (d.duration ? 'Complete · ' + d.duration : 'Complete'),
+      adds: 0, dels: 0, failed,
+      msg: m,
+      opens: 'text',
+    };
+  }
+
+  function renderGroup(kind, blockId, icon, msgs) {
+    const rows = msgs.map((m) => groupRowOf(m, kind));
+    const failed = rows.filter((r) => r.failed).length;
+    const title = kind === 'written'
+      ? 'Written ' + rows.length + ' file' + (rows.length === 1 ? '' : 's')
+      : 'Ran ' + rows.length + ' tool' + (rows.length === 1 ? '' : 's');
+    // Both blocks of one run are keyed by their first call, so the open state
+    // carries the kind too — otherwise opening "Written" opens "Ran" with it.
+    const openKey = kind + ':' + blockId;
+    const open = openGroups.has(openKey);
+    const box = document.createElement('div');
+    box.className = 'tool-group';
+    box.innerHTML = `
+      <div class="tool-group-header" role="button" tabindex="0" aria-expanded="${open}">
+        <span class="group-chev">${open ? '▾' : '▸'}</span>
+        <span class="group-icon">${icon}</span>
+        <span class="group-title">${escapeHtml(title)}</span>
+        ${failed ? `<span class="group-failed">${failed} failed</span>` : ''}
+      </div>`;
+    const head = box.querySelector('.tool-group-header');
+    const toggle = () => {
+      if (openGroups.has(openKey)) openGroups.delete(openKey); else openGroups.add(openKey);
+      renderTimeline();
+    };
+    head.addEventListener('click', toggle);
+    head.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+    if (!open) return box;
+    const body = document.createElement('div');
+    body.className = 'tool-group-body';
+    for (const r of rows) {
+      const rowKey = openKey + ':' + r.msg.id;
+      const rowOpen = openGroupRows.has(rowKey);
+      const row = document.createElement('div');
+      row.className = 'group-row' + (r.failed ? ' failed' : '') + (rowOpen ? ' open' : '');
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.innerHTML = `
+        <span class="group-row-icon mono">${escapeHtml(r.icon)}</span>
+        <span class="group-row-label mono">${escapeHtml(r.label)}</span>
+        ${r.adds ? `<span class="ok mono">+${r.adds}</span>` : ''}
+        ${r.dels ? `<span class="err-text mono">−${r.dels}</span>` : ''}
+        <span class="group-row-status">${escapeHtml(r.status)}</span>`;
+      const detail = document.createElement('div');
+      detail.className = 'group-row-detail mono-body';
+      const text = (r.msg.content || '').trim() || (r.msg.meta || {}).diff || '';
+      detail.textContent = text || 'No output was captured for this call.';
+      const activate = () => {
+        if (r.opens === 'text') {
+          if (openGroupRows.has(rowKey)) openGroupRows.delete(rowKey); else openGroupRows.add(rowKey);
+          renderTimeline();
+        } else {
+          openDeliveredFile(r.msg);
+        }
+      };
+      row.addEventListener('click', activate);
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+      });
+      body.appendChild(row);
+      if (rowOpen) body.appendChild(detail);
+    }
+    box.appendChild(body);
+    return box;
   }
 
   // ── TTS (per assistant message) ────────────────────────────────────────────

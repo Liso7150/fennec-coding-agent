@@ -3,11 +3,12 @@ use fennec_client::Core;
 
 use fennec_ui::attention::{
     ApprovalCard, ApprovedCommand, CardState, approval_card, approved_commands_panel,
-    attention_badge, needs_attention,
+    attention_badge, needs_attention, write_of_title,
 };
-use fennec_ui::markdown::{attachment_subtitle, rich_div};
+use fennec_ui::markdown::{artifact_badge, attachment_subtitle, diff_counts, rich_div};
 use fennec_ui::theme::{find_preset_index, theme_presets};
-use fennec_ui::widgets::{action_card, ai_header, attachment_card, composer_dock, composer_toolbar, edit_card, queue_strip, speak_tts, user_bubble};
+use fennec_ui::timeline::{CallShape, GroupRow, ran_title, split_calls, written_title};
+use fennec_ui::widgets::{action_card, ai_header, attachment_card, composer_dock, composer_toolbar, queue_strip, show_output, speak_tts, tool_group, user_bubble};
 use fennec_ui::workspace_dialog::open_workspace_dialog;
 use gpui_kit::base::Root;
 use gpui_kit::component::{
@@ -62,6 +63,182 @@ struct MsgMeta {
     /// path back into a real file.
     #[serde(default)]
     root: Option<String>,
+}
+
+/// What a row inside a folded block does when clicked: open the file the call
+/// wrote, or show the text the call left behind (its output, or a legacy diff).
+#[derive(Clone)]
+enum RowAct {
+    Open(String),
+    Show(String, String),
+}
+
+/// The two blocks one run of calls folded into, and the messages they absorbed.
+struct FoldBlocks {
+    /// The anchor message's id: both blocks key their element ids and their open
+    /// state off it, so no two runs in one task can collide.
+    id: u64,
+    written: Vec<GroupRow>,
+    /// What each written row does on click, in row order.
+    written_acts: Vec<RowAct>,
+    ran: Vec<GroupRow>,
+    ran_acts: Vec<RowAct>,
+}
+
+/// Every run of calls in a timeline, as the blocks to draw and the messages to
+/// leave out. The stream here interleaves the calls with the answers between
+/// them, so a run is one maximal stretch of calls and its blocks land where the
+/// calls happened — the same two counts the desktop shows for its tool list.
+struct Folds {
+    hidden: std::collections::HashSet<usize>,
+    at: std::collections::HashMap<usize, FoldBlocks>,
+}
+
+/// Whether a message is a call the blocks can absorb. A call that is still
+/// running is the one row the user watches, and a file the user attached
+/// themselves is not the run's work, so neither folds.
+fn folds_up(m: &Msg) -> bool {
+    let meta = m.meta.as_ref();
+    match m.kind {
+        MsgKind::Action => meta.and_then(|x| x.duration.as_ref()).is_some(),
+        MsgKind::Attach => meta.and_then(|x| x.verb.as_ref()).is_some(),
+        MsgKind::Edit => true,
+        _ => false,
+    }
+}
+
+fn call_failed(m: &Msg) -> bool {
+    m.meta.as_ref().and_then(|x| x.duration.as_ref()).map(|d| d == "failed").unwrap_or(false)
+}
+
+/// The call's own title, which `describe_call` spells `EDIT · Write file x.py`.
+fn call_title(m: &Msg) -> String {
+    m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into())
+}
+
+/// Whether the call put a file on disk. A failed write wrote nothing, so it
+/// folds with the calls that merely ran.
+fn is_write(m: &Msg) -> bool {
+    match m.kind {
+        MsgKind::Attach | MsgKind::Edit => true,
+        MsgKind::Action => !call_failed(m) && write_of_title(&call_title(m)).is_some(),
+        _ => false,
+    }
+}
+
+fn base_name(path: &str) -> String {
+    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
+}
+
+/// The file a row leads to, as the OS needs it. A delivered path is relative to
+/// the directory the loop ran in; `root` is that directory when the message
+/// knows it and the current workspace when it does not.
+fn absolute(root: &str, path: &str) -> String {
+    if path.is_empty() {
+        String::new()
+    } else if Path::new(path).is_absolute() {
+        path.to_string()
+    } else {
+        Path::new(root).join(path).to_string_lossy().into_owned()
+    }
+}
+
+fn written_row(m: &Msg, root: &str) -> (GroupRow, RowAct) {
+    let meta = m.meta.as_ref();
+    let path = meta.and_then(|x| x.path.clone())
+        // A write whose delivered chip this window never saw: the call's own
+        // title still says which file it was and what it did to it.
+        .or_else(|| write_of_title(&call_title(m)).map(|(_, p)| p))
+        .unwrap_or_default();
+    let verb = meta.and_then(|x| x.verb.clone())
+        .or_else(|| write_of_title(&call_title(m)).map(|(v, _)| v.to_string()))
+        .unwrap_or_else(|| "changed".into());
+    let (adds, dels) = match m.kind {
+        MsgKind::Edit => (meta.and_then(|x| x.add).unwrap_or(0), meta.and_then(|x| x.del).unwrap_or(0)),
+        _ => diff_counts(&m.content),
+    };
+    let label = if path.is_empty() { meta.and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into()) } else { path.clone() };
+    let abs = absolute(root, &path);
+    let act = if abs.is_empty() {
+        RowAct::Show(call_title(m), m.content.clone())
+    } else {
+        RowAct::Open(abs)
+    };
+    (GroupRow::new(artifact_badge(&base_name(&label)), label, verb).change(adds, dels), act)
+}
+
+fn ran_row(m: &Msg) -> (GroupRow, RowAct) {
+    let title = call_title(m);
+    // The badge the call was filed under is the first half of its own title, so
+    // the row cannot drift from what the standalone card said.
+    let (icon, label) = match title.split_once(" · ") {
+        Some((c, rest)) => (c.to_string(), rest.to_string()),
+        None => ("⚙".to_string(), title.clone()),
+    };
+    let failed = call_failed(m);
+    let row = GroupRow::new(icon, label, if failed { "Failed".into() } else { "Complete".into() });
+    (if failed { row.failed() } else { row }, RowAct::Show(title, m.content.clone()))
+}
+
+fn fold_run(run: &[Msg], id: u64, workspace: &str) -> FoldBlocks {
+    // Where the run wrote, which the file it delivered knows and the workspace
+    // the user is looking at now may not.
+    let root = run.iter().filter_map(|m| m.meta.as_ref().and_then(|x| x.root.clone()))
+        .next().unwrap_or_else(|| workspace.to_string());
+    // The loop reports a successful write twice — once as the call, once as the
+    // delivered file — and one row per file is the whole point of the count.
+    let delivered: Vec<String> = run.iter().filter(|m| m.kind == MsgKind::Attach)
+        .map(|m| absolute(&root, &m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default()))
+        .collect();
+    let mut keep: Vec<usize> = Vec::new();
+    let mut shapes: Vec<CallShape> = Vec::new();
+    for (ri, m) in run.iter().enumerate() {
+        let written_path = m.meta.as_ref().and_then(|x| x.title.as_ref())
+            .and_then(|tt| write_of_title(tt).map(|(_, p)| absolute(&root, &p)));
+        if m.kind == MsgKind::Action && written_path.as_deref().is_some_and(|p| delivered.iter().any(|d| d.as_str() == p)) {
+            continue;
+        }
+        keep.push(ri);
+        shapes.push(CallShape { wrote: is_write(m), running: false });
+    }
+    let groups = split_calls(&shapes);
+    let mut blocks = FoldBlocks { id, written: Vec::new(), written_acts: Vec::new(), ran: Vec::new(), ran_acts: Vec::new() };
+    for &gi in &groups.written {
+        let (row, act) = written_row(&run[keep[gi]], &root);
+        blocks.written.push(row);
+        blocks.written_acts.push(act);
+    }
+    for &gi in &groups.ran {
+        let (row, act) = ran_row(&run[keep[gi]]);
+        blocks.ran.push(row);
+        blocks.ran_acts.push(act);
+    }
+    blocks
+}
+
+fn fold_calls(msgs: &[Msg], root: &str) -> Folds {
+    let mut folds = Folds { hidden: std::collections::HashSet::new(), at: std::collections::HashMap::new() };
+    let mut i = 0usize;
+    while i < msgs.len() {
+        if !folds_up(&msgs[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut end = i;
+        while end < msgs.len() && folds_up(&msgs[end]) {
+            end += 1;
+        }
+        let blocks = fold_run(&msgs[start..end], msgs[start].id, root);
+        folds.hidden.extend(start..end);
+        // A write whose only record was the call the loop also delivered folds
+        // away entirely, leaving a run with nothing to show.
+        if !blocks.written.is_empty() || !blocks.ran.is_empty() {
+            folds.at.insert(start, blocks);
+        }
+        i = end;
+    }
+    folds
 }
 
 #[derive(Clone)]
@@ -185,6 +362,9 @@ struct App {
     queued: Vec<String>,
     inspector: bool,
     attention_only: bool,
+    /// The folded "Written N files" / "Ran N tools" blocks the user has opened,
+    /// keyed on their anchor message id.
+    open_blocks: std::collections::HashSet<u64>,
     search_open: bool,
     search: Entity<InputState>,
     composer: Entity<InputState>,
@@ -350,7 +530,7 @@ impl App {
 
         let mut app = Self {
             tasks: vec![], active: None, queued: vec![], inspector: true,
-            attention_only: false, search_open: false, search, composer,
+            attention_only: false, open_blocks: Default::default(), search_open: false, search, composer,
             server_url, engine_url, api_key, model, access_mode, theme, font_size, auto_save,
             notifications, debug_mode, experimental_features,
             perm_dropdown_open: false, model_dropdown_open: false,
@@ -771,6 +951,15 @@ impl App {
             if let Some(m) = t.msgs.iter_mut().find(|m| m.id == id) { m.collapsed = !m.collapsed; }
         }
         self.save();
+    }
+
+    /// Which folded call blocks the user opened. A block presents several
+    /// messages and owns none of them, so its state is keyed on the id of the
+    /// first one it absorbed rather than stored in a message.
+    fn toggle_block(&mut self, id: u64) {
+        if !self.open_blocks.remove(&id) {
+            self.open_blocks.insert(id);
+        }
     }
 
     fn new_task(&mut self) {
@@ -2038,8 +2227,46 @@ impl App {
                 }
             }
         }
+        // The calls folded into the two shared blocks every Fennec surface draws.
+        let folds = fold_calls(&msgs, &self.core_workspace());
         for (mi, m) in msgs.into_iter().enumerate() {
             let id = m.id;
+            // A settled call renders as a row inside its run's block, not as a
+            // card of its own. The call the run is still inside is not folded:
+            // it stays a card the user can expand and watch.
+            if let Some(b) = folds.at.get(&mi) {
+                let specs = [
+                    (&b.written, &b.written_acts, 0u64, "✎", written_title(b.written.len())),
+                    (&b.ran, &b.ran_acts, 1, "⚙", ran_title(b.ran.len())),
+                ];
+                for (rows, acts, bit, icon, title) in specs {
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    let key = b.id * 2 + bit;
+                    let open = self.open_blocks.contains(&key);
+                    let wt = weak.clone();
+                    let on_toggle = move |_: &mut Window, cx: &mut gpui::App| {
+                        let _ = wt.update(cx, |a, cx| {
+                            a.toggle_block(key);
+                            cx.notify();
+                        });
+                    };
+                    // A hidden call still has to be readable: a write row opens
+                    // the file, a call row opens what it returned.
+                    let acts = acts.clone();
+                    let on_row = move |i: usize, window: &mut Window, cx: &mut gpui::App| match acts.get(i) {
+                        Some(RowAct::Open(p)) if !p.is_empty() => fennec_ui::inspector::open_url(p),
+                        Some(RowAct::Show(tt, tx)) => show_output(tt, tx, window, cx),
+                        Some(RowAct::Open(_)) | None => {}
+                    };
+                    list = list.child(tool_group(&t, key, icon, &title, rows, open, on_toggle, Some(on_row)));
+                }
+                continue;
+            }
+            if folds.hidden.contains(&mi) {
+                continue;
+            }
             match m.kind {
                 MsgKind::User => {
                     // The user's own words sit on the right in a bubble: no
@@ -2089,20 +2316,12 @@ impl App {
                         }));
                 }
                 MsgKind::Attach => {
+                    // Only a file the user attached themselves reaches here: a
+                    // file the run wrote is a row in the Written block.
                     let name = m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into());
                     let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
                     let subtitle = attachment_subtitle(&path, &name);
-                    // A delivered path is relative to the directory the loop runs
-                    // in. Handing the OS a bare relative path resolves it against
-                    // this app's own directory, so the chip opens nothing — name
-                    // the file where the run actually put it.
-                    let root = m.meta.as_ref().and_then(|x| x.root.clone())
-                        .unwrap_or_else(|| self.core_workspace());
-                    let open_path = if path.is_empty() || std::path::Path::new(&path).is_absolute() {
-                        path
-                    } else {
-                        std::path::Path::new(&root).join(&path).to_string_lossy().into_owned()
-                    };
+                    let open_path = absolute(&self.core_workspace(), &path);
                     list = list.child(attachment_card(&t, id, &name, &subtitle, "…",
                         Some(move |_: &mut Window, _: &mut gpui::App| {
                             if !open_path.is_empty() {
@@ -2111,28 +2330,8 @@ impl App {
                         })));
                 }
                 MsgKind::Edit => {
-                    let add = m.meta.as_ref().and_then(|x| x.add).unwrap_or(0);
-                    let del = m.meta.as_ref().and_then(|x| x.del).unwrap_or(0);
-                    let path = m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default();
-                    let detail = m.content.clone();
-                    let collapsed = m.collapsed;
-                    let weak2 = weak.clone();
-                    let review_text = m.content.clone();
-                    list = list.child(edit_card(&t, id, "Edited 1 file", add, del, &path, &detail, !collapsed,
-                        move |_, cx| {
-                            let _ = weak2.update(cx, |a, cx| { a.toggle(id); cx.notify(); });
-                        },
-                        move |window, cx| {
-                            let review_text = review_text.clone();
-                            window.open_dialog(cx, move |dialog, _, _| {
-                                let review_text = review_text.clone();
-                                dialog.title("Review diff").content(move |content, _, _| {
-                                    content.child(div().max_h(px(480.0)).overflow_y_scrollbar()
-                                        .child(div().font_family("monospace").text_size(px(12.0))
-                                            .child(Label::new(review_text.clone()))))
-                                })
-                            });
-                        }));
+                    // A write from a history file: folded into the Written block
+                    // above, so nothing renders here.
                 }
                 MsgKind::Result => {
                     let speak = m.content.clone();
