@@ -1462,7 +1462,29 @@ impl App {
         let msgs = self.task().map(|t| t.msgs.clone()).unwrap_or_default();
         let weak = cx.entity().downgrade();
         let mut list = div().id("timeline-scroll").flex_1().track_scroll(&self.scroll_handle).overflow_y_scrollbar().px_5().py_3().flex().flex_col().gap_4();
-        for m in msgs {
+        // Reasoning that precedes an answer is attached to that answer and
+        // revealed by clicking the summary/header over the AI message.
+        let mut thoughts_for: std::collections::HashMap<usize, (Vec<usize>, Vec<String>, bool)> = std::collections::HashMap::new();
+        {
+            let mut i = 0usize;
+            while i < msgs.len() {
+                if msgs[i].kind == MsgKind::Think {
+                    let s = i;
+                    let mut e = i;
+                    while e < msgs.len() && msgs[e].kind == MsgKind::Think { e += 1; }
+                    if e < msgs.len() && msgs[e].kind == MsgKind::Result {
+                        let idxs: Vec<usize> = (s..e).collect();
+                        let open = !msgs[s].collapsed;
+                        let chunks: Vec<String> = msgs[s..e].iter().map(|p| p.content.clone()).collect();
+                        thoughts_for.insert(e, (idxs, chunks, open));
+                    }
+                    i = e;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        for (mi, m) in msgs.into_iter().enumerate() {
             let id = m.id;
             match m.kind {
                 MsgKind::User => {
@@ -1471,7 +1493,11 @@ impl App {
                     list = list.child(user_bubble(&t, &m.content, id as usize));
                 }
                 MsgKind::Think => {
-                    // Thoughts are collapsed by default; click to expand.
+                    // If these thoughts belong to a following answer, render
+                    // them there behind its summary toggle instead.
+                    if thoughts_for.values().any(|(idxs, _, _)| idxs.contains(&mi)) {
+                        continue;
+                    }
                     let collapsed = m.collapsed;
                     let weak2 = weak.clone();
                     let header = ai_header(&t, id, &m.time, None::<fn(&mut Window, &mut gpui::App)>)
@@ -1542,13 +1568,48 @@ impl App {
                 }
                 MsgKind::Result => {
                     let speak = m.content.clone();
-                    let header = ai_header(&t, id, &m.time, Some(move |window: &mut Window, cx: &mut gpui::App| {
+                    let mut header = ai_header(&t, id, &m.time, Some(move |window: &mut Window, cx: &mut gpui::App| {
                         speak_tts(&speak, window, cx);
                     }));
-                    list = list.child(div().id(ElementId::NamedInteger("msg".into(), id))
+                    let attached = thoughts_for.get(&mi).cloned();
+                    let topen = attached.as_ref().map(|(_, _, o)| *o).unwrap_or(false);
+                    if let Some((idxs, chunks, _)) = &attached {
+                        let n = chunks.len();
+                        let idxs = idxs.clone();
+                        let weak_t = weak.clone();
+                        header = header.child(
+                            Button::new(ElementId::Name(format!("sum-tog-{id}").into()))
+                                .ghost().xsmall()
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak_t.update(cx, |a, cx| {
+                                        if let Some(tk) = a.task_mut() {
+                                            for ix in &idxs {
+                                                if let Some(mm) = tk.msgs.get_mut(*ix) {
+                                                    mm.collapsed = !mm.collapsed;
+                                                }
+                                            }
+                                        }
+                                        cx.notify();
+                                    });
+                                })
+                                .child(Label::new(format!("{} Thoughts ({})", if topen { "▾" } else { "▸" }, n))
+                                    .text_size(px(10.5)).text_color(t.green)),
+                        );
+                    }
+                    let mut block = div().id(ElementId::NamedInteger("msg".into(), id))
                         .flex().flex_col().gap_1()
-                        .child(header)
-                        .child(rich_div(&t, &m.content, false, id as usize)));
+                        .child(header);
+                    if topen {
+                        if let Some((_, chunks, _)) = &attached {
+                            let mut body = div().flex().flex_col().gap_1();
+                            for (i, r) in chunks.iter().enumerate() {
+                                body = body.child(rich_div(&t, r, true, id as usize * 100 + i));
+                            }
+                            block = block.child(body);
+                        }
+                    }
+                    block = block.child(rich_div(&t, &m.content, false, id as usize));
+                    list = list.child(block);
                 }
             }
         }
