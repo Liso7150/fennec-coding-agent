@@ -1999,6 +1999,22 @@ impl App {
             if sources.len() > 1 { format!("{first} · {} files", sources.len() - 1) } else { first }
         };
 
+        // Inspectable items for the right panel, collected from the task msgs.
+        use fennec_ui::inspector::{InspectItem, InspectSection, inspect_section};
+        let msgs = self.task().map(|tk| tk.msgs.clone()).unwrap_or_default();
+        let mut links: Vec<String> = Vec::new();
+        for m in &msgs {
+            for l in fennec_ui::inspector::extract_links(&m.content) {
+                if !links.contains(&l) { links.push(l); }
+            }
+        }
+        let sub_items: Vec<InspectItem> = self.agents.iter().skip(1).enumerate().map(|(i, a)| InspectItem { id: format!("{i}"), title: a.clone(), subtitle: "delegated agent".into(), detail: String::new(), url: None }).collect();
+        let proc_items: Vec<InspectItem> = msgs.iter().filter(|m| m.kind == MsgKind::Action).enumerate().map(|(i, m)| InspectItem { id: format!("{i}"), title: m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "Action".into()), subtitle: m.meta.as_ref().and_then(|x| x.duration.clone()).unwrap_or_else(|| "running".into()), detail: m.content.clone(), url: None }).collect();
+        let skill_items: Vec<InspectItem> = skills.iter().enumerate().map(|(i, s)| InspectItem { id: format!("{i}"), title: s.clone(), subtitle: "tool kind".into(), detail: String::new(), url: None }).collect();
+        let art_items: Vec<InspectItem> = msgs.iter().filter(|m| m.kind == MsgKind::Attach || m.kind == MsgKind::Edit).enumerate().map(|(i, m)| InspectItem { id: format!("{i}"), title: m.meta.as_ref().and_then(|x| x.title.clone()).unwrap_or_else(|| "file".into()), subtitle: m.meta.as_ref().and_then(|x| x.path.clone()).unwrap_or_default(), detail: m.content.clone(), url: None }).collect();
+        let web_items: Vec<InspectItem> = links.iter().enumerate().map(|(i, l)| InspectItem { id: format!("{i}"), title: l.clone(), subtitle: "linked reading".into(), detail: String::new(), url: Some(l.clone()) }).collect();
+        let src_items: Vec<InspectItem> = sources.iter().enumerate().map(|(i, s)| InspectItem { id: format!("{i}"), title: s.clone(), subtitle: "file inspected".into(), detail: String::new(), url: None }).collect();
+
         div().w(px(300.0)).flex_shrink_0().bg(t.background).border_l_1().border_color(t.border).flex().flex_col().overflow_y_scrollbar()
             .child(div().px_4().py_3().border_b_1().border_color(t.border)
                 .child(Label::new("Workspace context").font_weight(FontWeight::SEMIBOLD).text_color(t.accent))
@@ -2018,14 +2034,12 @@ impl App {
                                 .child(Label::new(task_title).text_size(px(11.0)).text_color(t.muted_foreground).truncate())
                                 .child(Label::new(format!("Running · {elapsed}")).text_size(px(11.0)).text_color(t.green))))
                 })))
-            .child(div().px_4().py_3().border_b_1().border_color(t.border)
-                .child(Label::new("WORKSPACE CONTEXT").text_size(px(10.0)).text_color(t.muted_foreground))
-                .child(self.ctx_row("◉", "Subagents", if subagents > 0 { format!("{subagents} delegated agents") } else { "No delegated agents".into() }, t.accent, cx))
-                .child(self.ctx_row("◎", "Processes", format!("{msg_count} messages · stream {}", if working { "active" } else { "idle" }), t.blue, cx))
-                .child(self.ctx_row("⚡", "Skills", skills_value, t.yellow, cx))
-                .child(self.ctx_row("▣", "Artifacts", if artifacts > 0 { format!("{artifacts} task artifacts") } else { "No task artifacts".into() }, t.green, cx))
-                .child(self.ctx_row("◈", "Web Readings", if readings > 0 { format!("{readings} linked readings") } else { "No linked readings".into() }, t.blue, cx))
-                .child(self.ctx_row("◌", "Sources", sources_value, t.muted_foreground, cx)))
+            .child(inspect_section(&t, InspectSection { id: "subagents", icon: "👥", label: "Subagents", empty: "No delegated agents", items: sub_items }))
+            .child(inspect_section(&t, InspectSection { id: "processes", icon: "📡", label: "Processes", empty: "No commands run", items: proc_items }))
+            .child(inspect_section(&t, InspectSection { id: "skills", icon: "⚡", label: "Skills", empty: "Repository inspection", items: skill_items }))
+            .child(inspect_section(&t, InspectSection { id: "artifacts", icon: "📦", label: "Artifacts", empty: "No task artifacts", items: art_items }))
+            .child(inspect_section(&t, InspectSection { id: "web", icon: "🌐", label: "Web Readings", empty: "No linked readings", items: web_items }))
+            .child(inspect_section(&t, InspectSection { id: "sources", icon: "🔗", label: "Sources", empty: "No task sources", items: src_items }))
             .child(div().px_4().py_3().border_b_1().border_color(t.border)
                 .child(Label::new("ENVIRONMENT").text_size(px(10.0)).text_color(t.muted_foreground))
                 .child(self.row("Repository", "fennec", cx))
