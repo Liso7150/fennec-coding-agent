@@ -16,7 +16,13 @@
   const STORAGE_KEY = 'fennec-coding-agent-history';
   const MAX_INLINE_BYTES = 200 * 1024; // per attached text file
   const POLL_INTERVAL_MS = 1000;
-  const POLL_MAX_ATTEMPTS = 180;
+  // How long a run may say nothing at all before the shell calls it lost. Not a
+  // cap on the run: `pollCore` and `pollTask` both reset it on news, because a
+  // complex task legitimately runs for many minutes. One local turn can itself
+  // run silent for minutes on a cold model, so the ceiling matches the one the
+  // core gives a single engine request (engine.py `timeout=600`) —
+  // the shell must not abandon a run earlier than the layer below it does.
+  const POLL_MAX_ATTEMPTS = 600;
 
   // The only statuses with a run still behind them; anything else on disk is
   // finished, so a question it still holds is dead, not unanswered.
@@ -55,6 +61,9 @@
     queued: [],
     inspectorOpen: readSetting('fennec-inspector-open', 'true') !== 'false',
     backendConnected: false,
+    // Rendered outlet rows from /api/outlets, or null while the server has not
+    // told us. Never persisted: it describes this machine, not this conversation.
+    outlets: null,
     nextId: 1,
     searchQuery: '',
     attentionOnly: false,
@@ -69,7 +78,26 @@
   let models = FALLBACK_MODELS.slice();
   let currentModel = readSetting('fennec-model', 'qwen3_5_moe');
 
-  // Permission modes mirror the desktop app (gui_main.rs set_access_mode).
+  // Every step type the loop can put in `/api/agent/poll`, mirrored from
+  // fennec-core/loop.py STEP_TYPES. A type missing here is dropped by
+  // applyCoreStep's open-ended chain rather than stopping the watch, but the list
+  // is what tells a reader which steps the timeline is expected to speak for.
+  const STEP_TYPES = ['plan', 'assistant', 'partial', 'tool_start', 'progress', 'tool',
+    'queue', 'final', 'error', 'cancelled', 'approval_required'];
+
+  // The reasoning levels are core's vocabulary (loop.py
+  // EFFORT_LEVELS) and the native dropdown's labels (fennec-ui controls.rs
+  // REASONING_LEVELS) — the same four rows on both surfaces.
+  const EFFORT_LEVELS = [
+    { id: 'auto', name: 'Auto' },
+    { id: 'low', name: 'Low' },
+    { id: 'medium', name: 'Medium' },
+    { id: 'high', name: 'High' },
+  ];
+  let currentEffort = readSetting('fennec-effort', 'auto');
+  if (!EFFORT_LEVELS.some((l) => l.id === currentEffort)) currentEffort = 'auto';
+
+  // Permission modes mirror the native shell (fennec-desktop/src/gui_main.rs set_access_mode).
   const PERM_MODES = {
     ask: {
       icon: '🛡', label: 'Ask every time', colorClass: 'perm-ask',
@@ -131,7 +159,11 @@
           // Runtime-only flags must never survive a reload.
           t.polling = false;
           t.finalized = false;
-          t.msgs = stripDeliveryProse(collapseDeliveries(t.msgs));
+          // A run that already said how it ended must not say it again after a
+          // reload, so the flag is rebuilt from the card rather than dropped
+          // along with the other runtime-only flags.
+          t.endNoted = (t.msgs || []).some((m) => m.kind === 'result' && TERMINAL_NOTES.indexOf(m.content) !== -1);
+          t.msgs = stripCallBlobs(stripDeliveryProse(collapseDeliveries(t.msgs)));
           // A finished conversation cannot still be holding a live question, so
           // reloads of older history do not pin a dead one in My Attention.
           if (LIVE_STATUSES.indexOf(t.status) === -1) expireApprovals(t, EXPIRED_ENDED);
@@ -172,6 +204,34 @@
       out.push(m);
     }
     return out;
+  }
+
+  // A turn that wrote the call down instead of answering kept the call object
+  // as its own answer card. Live, the step's call list filters it; restored
+  // history has no call list, so the shape is read from the text — otherwise
+  // the same `{"name": …}` fence is shown over and over as an answer.
+  function stripCallBlobs(msgs) {
+    return (msgs || []).filter((m) => m.kind !== 'result' || !callBlob(m.content));
+  }
+
+  // The words a gated call gets, from whichever half of the record this client
+  // holds: the loop's own description when it has one, the tool table's phrase
+  // when it only has the name. A raw `run_shell` is never shown to the user —
+  // it is the loop's word for the call, not what the call does.
+  // `fennec-ui/src/attention.rs::gate_title` is the source.
+  function gateTitle(name, described) {
+    const n = String(name || '').trim();
+    const t = String(described || '').trim();
+    if (t && t !== n) return t;
+    return String(describeCall(n, {}).title || n).trim();
+  }
+
+  // An answer the user already sent is not a question: the card leaves the run
+  // and My Attention keeps it in the answered list. An expired one stays — the
+  // run stopped with nothing to click, which has to be said.
+  // `fennec-ui/src/attention.rs::card_shows` is the source.
+  function cardShows(status) {
+    return status !== 'resolved';
   }
 
   // A question with no live run behind it stops being answerable: expired, not
@@ -349,6 +409,100 @@
     return msg;
   }
 
+  // The words that end a run. Both the local stop and the backend's `cancelled`
+  // step describe the same ending, and the poll timeout can land on a run the
+  // user already stopped, so only the first of them reaches the timeline.
+  const TERMINAL_NOTES = [
+    'Task stopped by user.', 'Task cancelled.', 'Response timed out.', 'Task error.',
+    'Lost contact with the backend while waiting for the response.',
+  ];
+
+  function noteEnd(task, content) {
+    if (task.endNoted) return;
+    task.endNoted = true;
+    pushMsg(task, { author: 'Fennec', content, kind: 'result', collapsed: false });
+  }
+
+  // The tool names the loop advertises (tools.py:TOOLS) and the
+  // fence languages that mean "run this in a shell" (loop.py:_SHELL_LANGS).
+  // Same tables the native shell reads, so both surfaces call the same text a
+  // blob.
+  const TOOL_NAMES = new Set([
+    'list_dir', 'read_file', 'write_file', 'edit_file', 'grep', 'semantic_search',
+    'run_python', 'run_shell', 'git_status', 'git_diff', 'web_task', 'coworker_task',
+    'propose_queue', 'summarise',
+  ]);
+  const SHELL_LANGS = new Set([
+    'bash', 'sh', 'shell', 'zsh', 'ksh', 'powershell', 'pwsh', 'cmd', 'bat',
+  ]);
+
+  function fenceBlocks(text) {
+    const out = [];
+    const re = /```([^\n]*)\n([\s\S]*?)(?:```|$)/g;
+    let m;
+    while ((m = re.exec(text)) !== null) out.push({ lang: m[1].trim().toLowerCase(), body: m[2] });
+    return out;
+  }
+
+  function jsonNamesTool(s) {
+    const t = String(s || '').trim();
+    if (t[0] !== '{' && t[0] !== '[') return false;
+    try {
+      const walk = (n) => {
+        if (Array.isArray(n)) return n.some(walk);
+        if (n && typeof n === 'object') {
+          for (const k of ['name', 'tool', 'type', 'command']) {
+            if (typeof n[k] === 'string' && TOOL_NAMES.has(n[k])) return true;
+          }
+          return Object.values(n).some(walk);
+        }
+        return false;
+      };
+      if (walk(JSON.parse(t))) return true;
+    } catch (_) { /* a call that ran out of room has no parseable JSON */ }
+    const head = t.match(/"(?:name|tool|type|command)"\s*:\s*"([a-z_][a-z0-9_]*)"/);
+    return !!(head && TOOL_NAMES.has(head[1]));
+  }
+
+  // Text that is a tool call the model spelled out rather than an answer: the
+  // bare object, the <tool_code> tag, the same shapes inside a code fence, a
+  // fence named after a tool, or a reply that is nothing but shell blocks.
+  // Read from the text alone, so it also works on restored history, where the
+  // step's call list is gone. A fence holding ordinary code, and any prose
+  // around it, is formatted output and stays on screen.
+  function callBlob(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (t[0] === '<') return true;
+    if (t[0] === '{' || t[0] === '[') return jsonNamesTool(t);
+    const blocks = fenceBlocks(t);
+    if (!blocks.length) return t.includes('<tool_code>');
+    for (const b of blocks) {
+      if (TOOL_NAMES.has(b.lang.replace(/^tool:/, '').trim())) return true;
+      const body = b.body.trim();
+      if (jsonNamesTool(body)) return true;
+      if (body.startsWith('<tool_code>')) return true;
+      const head = (body.split('\n')[0] || '').trim().replace(/^tool_/, '').split(/[\s(=]/)[0];
+      if (TOOL_NAMES.has(head)) return true;
+    }
+    return t.replace(/```[^\n]*\n[\s\S]*?(?:```|$)/g, '').trim() === ''
+      && blocks.some((b) => SHELL_LANGS.has(b.lang) && b.body.trim());
+  }
+
+  // What the model writes when it is answering a tool prompt rather than the
+  // user: the call object, or the tagged/fenced form of one. Prose starts with a
+  // word. A fence or a call key beside prose counts only when the loop read a
+  // call out of that same step — the same fence with no call in it is the model
+  // answering with formatted code, which belongs on screen.
+  function looksLikeCall(text, madeCall) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (callBlob(t)) return true;
+    if (t.charAt(0) === '{' || t.charAt(0) === '[' || t.charAt(0) === '<') return true;
+    if (t.charAt(0) === '`') return t.slice(0, 3) === '```' && !!madeCall;
+    return !!madeCall && /"(tool|name|command|args|arguments)"\s*:/.test(t);
+  }
+
   // ── Tool kind → display mapping (events.rs ToolEventKind) ─────────────────
   const TOOL_KINDS = {
     InspectRepository: { label: 'Inspect repository', icon: '🔍', category: 'source' },
@@ -377,7 +531,7 @@
     EvaluateFineTunedModel: { label: 'Evaluate model', icon: '⚡', category: 'other' },
   };
 
-  // The core loop's own registry (fennec_core/tools.py) names calls in snake
+  // The core loop's own registry (tools.py) names calls in snake
   // case; the Rust table above names the same actions in enum form. Both arrive
   // here so a card never falls back to a bare "🔧 write_file".
   const CORE_TOOL_KINDS = {
@@ -395,6 +549,15 @@
     coworker_task: { label: 'Delegate to coworker', icon: '🤝', category: 'other' },
     summarise: { label: 'Summarise the run', icon: '✓', category: 'other' },
   };
+
+  // Mirrors fennec-ui/src/inspector.rs. Reading, writing, searching and running
+  // a command are on from the first token of every run, so they are not skills
+  // the user reached for; and a command is only a process while its process is
+  // still alive, which is why Processes empties itself when the call returns.
+  const DEFAULT_TOOLS = ['read_file', 'write_file', 'edit_file', 'run_shell', 'grep', 'semantic_search'];
+  const COMMAND_TOOLS = ['run_shell', 'run_python', 'git_status', 'git_diff'];
+  const isDefaultTool = (kind) => DEFAULT_TOOLS.includes(kind);
+  const isCommandTool = (kind) => COMMAND_TOOLS.includes(kind);
 
   // What a call is about, worded the way fennec-ui/src/attention.rs:describe_call
   // words it, so the native shells and this one title the same call alike.
@@ -525,6 +688,15 @@
     return full + '\n\n' + body;
   }
 
+  // Mirrors fennec_ui::timeline::fold_words: the folded words of a thought. A
+  // paragraph of reasoning reads as one line among the calls it happened
+  // between, with the same ellipsis a cut command carries; the whole thing comes
+  // back when the user opens the row.
+  function thoughtPreview(text) {
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    return words.length <= ROW_WORDS ? words.join(' ') : words.slice(0, ROW_WORDS).join(' ') + ' …';
+  }
+
   // Mirrors fennec-ui/src/markdown.rs:attachment_subtitle — a file at the
   // workspace root has no directory to name, so it shows the kind alone.
   function attachmentSubtitle(relPath, name) {
@@ -605,10 +777,50 @@
     renderAll();
   }
 
-  function deleteTask(id) {
+  // Mirrors fennec-ui/src/confirm.rs: heading, what is lost, the subject in a
+  // mono inset, then Cancel and the colored action. The browser's own confirm()
+  // can't be themed, so destructive actions go through this instead.
+  function showConfirm(opts) {
+    const dlg = $('confirm-dialog');
+    $('confirm-title').textContent = opts.title;
+    $('confirm-detail').textContent = opts.detail;
+    const subject = $('confirm-subject');
+    subject.textContent = opts.subject || '';
+    subject.hidden = !opts.subject;
+    const action = $('confirm-action');
+    action.textContent = opts.action || 'Confirm';
+    action.className = 'button ' + (opts.danger === false ? 'primary' : 'danger');
+    return new Promise((resolve) => {
+      const settle = (answer) => {
+        action.removeEventListener('click', onAction);
+        $('confirm-cancel').removeEventListener('click', onCancel);
+        $('confirm-cancel-x').removeEventListener('click', onCancel);
+        dlg.removeEventListener('close', onClose);
+        resolve(answer);
+      };
+      const onAction = () => { dlg.close(); settle(true); };
+      const onCancel = () => { dlg.close(); settle(false); };
+      // Escape and the backdrop both close without a click handler of their own.
+      const onClose = () => settle(false);
+      action.addEventListener('click', onAction);
+      $('confirm-cancel').addEventListener('click', onCancel);
+      $('confirm-cancel-x').addEventListener('click', onCancel);
+      dlg.addEventListener('close', onClose);
+      dlg.showModal();
+      $('confirm-cancel').focus();
+    });
+  }
+
+  async function deleteTask(id) {
     const tk = state.tasks.find((t) => t.id === id);
     if (!tk) return;
-    if (!confirm('Delete task "' + tk.title + '"?')) return;
+    const ok = await showConfirm({
+      title: 'Delete Task',
+      detail: 'The task and everything it did are removed from this device. This can’t be undone.',
+      subject: tk.title,
+      action: 'Delete',
+    });
+    if (!ok) return;
     if (tk.backendId) {
       apiFetch('/api/tasks/' + encodeURIComponent(tk.backendId), { method: 'DELETE' }).catch(() => {});
     }
@@ -644,6 +856,9 @@
         ':' + (d.status || '') + (d.decision || '') + (d.note || '') + ':' + (d.chunks || 0) +
         ':' + (d.duration || '') + ':' + (d.toolKind || '') + ':' + (d.stream ? 1 : 0);
     }
+    // The plan strip is task state, not a message, so the checklist the loop
+    // republishes has to be in the key or a finished stage would never tick.
+    key += '#p' + (task.plan || []).map((s) => (s.done ? '✓' : '·') + s.text).join(',');
     // Which blocks and rows are open lives in JS, not in the DOM this rebuild
     // throws away, so it has to be part of the key — otherwise opening a block
     // would compute the same timeline and paint nothing.
@@ -679,20 +894,64 @@
     timelineStatus.className = 'status-badge status-' + String(task.status || '').toLowerCase();
 
     const ordered = task.msgs.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-    const folds = foldCalls(ordered, task.id);
-    // The newest run is the stretch the loop may still be inside, so its block is
-    // the one that opens on its own; the next answer starts a newer stretch and
-    // closes this one.
-    const starts = Array.from(folds.at.keys());
-    const newest = starts.length ? starts[starts.length - 1] : -1;
+    const folds = foldCalls(ordered, task.id, isWorking());
+    // The clock the running block carries, read once for the whole draw.
+    const runSecs = task.startedAt ? Math.max(0, Math.floor((Date.now() - task.startedAt) / 1000)) : 0;
     for (let i = 0; i < ordered.length; i += 1) {
       const block = folds.at.get(i);
-      if (block) timeline.appendChild(renderGroup(block.id, block.rows, i === newest));
+      if (block) timeline.appendChild(renderGroup(block.id, block.rows, block.live, runSecs));
       if (folds.hidden.has(i)) continue;
-      timeline.appendChild(renderMessage(ordered[i]));
+      const shown = ordered[i];
+      // The block above is emitted whatever happens to this message: a folded
+      // run of tool calls must not vanish because the card after it did.
+      if (shown.kind === 'approval' && !cardShows((shown.meta || {}).status)) continue;
+      timeline.appendChild(renderMessage(shown));
+    }
+    // The running block follows its own tail, so the rows the user is watching
+    // are the ones on screen. Pinned after the insert, where the height is real.
+    timeline.querySelectorAll('.tool-group-body[data-live]').forEach((b) => {
+      b.scrollTop = b.scrollHeight;
+    });
+    // The loop's own stage list, last in the timeline because it says what comes
+    // next rather than what happened. A checklist, not a card — and never a
+    // thought row: the thinking the block holds is the model's own reasoning.
+    const plan = task.plan || [];
+    if (plan.length) {
+      const strip = document.createElement('div');
+      strip.className = 'core-plan';
+      const head = document.createElement('div');
+      head.className = 'core-plan-head';
+      head.textContent = 'Plan';
+      strip.appendChild(head);
+      for (const step of plan) {
+        const row = document.createElement('div');
+        row.className = 'core-plan-step' + (step.done ? ' done' : '');
+        const mark = document.createElement('span');
+        mark.className = 'core-plan-mark';
+        mark.textContent = step.done ? '✓' : '→';
+        const text = document.createElement('span');
+        text.className = 'core-plan-text';
+        text.textContent = step.text || '';
+        row.appendChild(mark);
+        row.appendChild(text);
+        strip.appendChild(row);
+      }
+      timeline.appendChild(strip);
     }
     if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
     else timeline.scrollTop = previousTop;
+  }
+
+  // A tick moves one number, and the running block holds the only copy of it.
+  // Rebuilding the whole timeline for that would throw away the scroll position
+  // inside the block — the rows the user just read would jump back under the cap.
+  function tickTimer() {
+    const task = activeTask();
+    if (!task || !task.startedAt || !isWorking()) return;
+    const secs = Math.max(0, Math.floor((Date.now() - task.startedAt) / 1000));
+    timeline.querySelectorAll('.tool-group-header[data-live] .group-title').forEach((el) => {
+      el.textContent = 'Running · ' + clock(secs);
+    });
   }
 
   function chevron(m) {
@@ -710,12 +969,8 @@
       case 'user':
         wrap.innerHTML = `
           <div class="message-card">
-            <div class="message-header">
-              <div class="message-avatar user">L</div>
-              <span class="message-author user">${escapeHtml(m.author)}</span>
-              <span class="message-time">${time}</span>
-            </div>
             <div class="message-body">${escapeHtml(m.content)}</div>
+            <div class="message-footer"><span class="message-time">${time}</span></div>
           </div>`;
         break;
 
@@ -725,8 +980,6 @@
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header" data-toggle="1" role="button" tabindex="0" aria-expanded="${!m.collapsed}">
-              <div class="message-avatar agent">F</div>
-              <span class="message-author agent">${escapeHtml(m.author)}</span>
               <span class="action-label think-label">Thinking</span>
               <span class="chunk-hint">${escapeHtml(hint)}</span>
               <span class="message-time">${time}</span>
@@ -747,7 +1000,13 @@
         const dur = meta.duration ? ' · ' + meta.duration : '';
         const statusClass = status === 'Failed' ? 'failed' : status === 'Running' ? 'running' : 'complete';
         const lines = (m.content || '').split('\n').length;
-        const hint = status === 'Running' ? 'running…' : lines + ' line' + (lines !== 1 ? 's' : '');
+        // The live progress line replaces the "running…" hint and the "No output
+        // yet." body for exactly as long as the call is in flight. Its text is the
+        // loop's, shown verbatim: never truncated, never re-cased, never rebuilt
+        // from step/of.
+        const prog = status === 'Running' ? meta.progress : null;
+        const hint = prog ? prog.text + (prog.meter ? ' · ' + prog.meter : '')
+          : status === 'Running' ? 'running…' : lines + ' line' + (lines !== 1 ? 's' : '');
         // Same placeholder the shared `action_card` draws: the running call is
         // kept out of the folded blocks so it can be watched, and an empty body
         // would make that toggle look dead.
@@ -756,15 +1015,13 @@
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header" data-toggle="1" role="button" tabindex="0" aria-expanded="${!m.collapsed}">
-              <div class="message-avatar agent tool-avatar">${tm.icon}</div>
-              <span class="message-author agent">${escapeHtml(m.author)}</span>
               <span class="action-label">${escapeHtml(short)}</span>
-              <span class="chunk-hint">${escapeHtml(hint)}</span>
+              <span class="chunk-hint${prog ? ' call-progress' : ''}">${escapeHtml(hint)}</span>
               <span class="message-status ${statusClass}">${escapeHtml(status)}${escapeHtml(dur)}</span>
               <span class="message-time">${time}</span>
               <span class="collapse-indicator">${chevron(m)}</span>
             </div>
-            <div class="message-body mono-body">${escapeHtml(bodyText)}</div>
+            <div class="message-body mono-body">${escapeHtml(prog ? prog.text : bodyText)}</div>
           </div>`;
         break;
       }
@@ -801,8 +1058,6 @@
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header">
-              <div class="message-avatar agent tool-avatar">📝</div>
-              <span class="message-author agent">${escapeHtml(m.author)}</span>
               <span class="action-label">${escapeHtml(meta.label || 'Edited 1 file')}</span>
               <button class="quiet-button review-btn" type="button">Review</button>
             </div>
@@ -819,17 +1074,18 @@
         const expired = meta.status === 'expired';
         const risk = meta.risk || 'medium';
         const riskClass = risk === 'high' ? 'failed' : risk === 'medium' ? 'running' : 'complete';
-        const cmd = meta.command || meta.action || 'action';
+        // The header asks in the loop's own words, never with a tool name: an
+        // unknown tool is all its name has to offer, a known one gets the phrase.
+        const ask = gateTitle(meta.action, meta.command);
+        const cmd = String(meta.command || '').trim();
         wrap.innerHTML = `
           <div class="message-card">
             <div class="message-header">
-              <div class="message-avatar agent tool-avatar">⚠</div>
-              <span class="message-author agent">${escapeHtml(m.author)}</span>
-              <span class="action-label">${escapeHtml(meta.action || 'Approval requested')}</span>
+              <span class="action-label">${escapeHtml(ask)}</span>
               <span class="message-status ${riskClass}">${escapeHtml(risk)} risk</span>
               <span class="message-time">${time}</span>
             </div>
-            <div class="message-body mono-body">${escapeHtml(cmd)}</div>
+            ${cmd && cmd !== ask ? `<div class="message-body mono-body">${escapeHtml(cmd)}</div>` : ''}
             ${meta.reason ? `<div class="message-body muted">${escapeHtml(meta.reason)}</div>` : ''}
             <div class="approval-actions">
               ${pending ? APPROVAL_DECISIONS.map(([key, label]) => `<button class="quiet-button approval-btn${key.startsWith('reject') ? ' reject' : ''}" type="button" data-decision="${key}">${label}</button>`).join('') : `<span class="message-status ${expired ? 'failed' : (String(meta.decision || '').startsWith('allow') ? 'complete' : 'failed')}">${escapeHtml(expired ? 'not used · ' + (meta.note || EXPIRED_ENDED) : 'answer sent · ' + decisionLabel(meta.decision))}</span>`}
@@ -840,17 +1096,18 @@
 
       case 'result':
       default: {
+        // The answer and the user's own words end with their time on the left,
+        // where the line of type actually finished; no header row is left above
+        // them holding nothing but a clock.
         const streaming = !!meta.stream;
         wrap.innerHTML = `
           <div class="message-card">
-            <div class="message-header">
-              <div class="message-avatar agent result-avatar">✓</div>
-              <span class="message-author agent">${escapeHtml(m.author)}</span>
+            <div class="message-body md">${mdBody(m.content)}</div>
+            <div class="message-footer">
               ${streaming ? '<span class="message-status running">Streaming…</span>' : ''}
               <span class="message-time">${time}</span>
               <button class="tts-btn" type="button" title="Read aloud" aria-label="Read aloud">🔊</button>
             </div>
-            <div class="message-body md">${mdBody(m.content)}</div>
           </div>`;
         break;
       }
@@ -913,18 +1170,83 @@
   }
 
   // ── Folded tool calls ──────────────────────────────────────────────────────
-  // Mirrors fennec-ui/src/timeline.rs. Every action of one run — the files it
-  // wrote and the tools it ran, together — folds into one block, and only the
-  // call the run is still inside stays on its own, where its output can be
-  // watched.
+  // Mirrors fennec-ui/src/timeline.rs. Everything one run does between two
+  // answers — its thoughts, its reads, its writes, its commands — folds into one
+  // block, and only the call the run is still inside stays on its own, where its
+  // output can be watched. While the run is inside the stretch the block is the
+  // present tense: open, with a ticking timer. The answer ends it: the timer goes,
+  // the block says how many of each kind of call there were, and it closes.
   function foldsUp(m) {
     const d = m.meta || {};
+    // A thought belongs to the stretch it was thought in, so it never starts a new
+    // block of its own. Where it is drawn is the block's business.
+    if (m.kind === 'think') return true;
     if (m.kind === 'action') return !!d.status && d.status !== 'Running';
     if (m.kind === 'attach') return !!d.verb;
     return m.kind === 'edit';
   }
 
-  function foldCalls(msgs, taskId) {
+  // Mirrors fennec_ui::timeline::clock: MM:SS, and H:MM:SS once it passes an hour.
+  function clock(secs) {
+    const n = Math.max(0, Math.floor(secs));
+    const h = Math.floor(n / 3600);
+    const m = Math.floor((n % 3600) / 60);
+    const s = n % 60;
+    const two = (v) => v.toString().padStart(2, '0');
+    return h > 0 ? h + ':' + two(m) + ':' + two(s) : two(m) + ':' + two(s);
+  }
+
+  // The three buckets a settled block counts, in the order the line reads them:
+  // disjoint, so a read or a write is not also counted as a tool. A thought is in
+  // none of them. Mirrors fennec_ui::timeline::block_title.
+  const COUNT_BUCKETS = [
+    ['tools', 'ran', 'tool'],
+    ['reads', 'read', 'file'],
+    ['writes', 'wrote', 'file'],
+  ];
+
+  // Mirrors fennec_ui::timeline::kind_of: the call's own words decide, after the
+  // category badge comes off, so a read is a read on either surface.
+  function kindOf(m) {
+    if (m.kind === 'think') return null;
+    const d = m.meta || {};
+    if (writeVerb(m)) return 'edit';
+    const body = String(d.title || toolMeta(d.toolKind).label || '')
+      .replace(/^[A-Z]+ · /, '').trim().split(/\s+/)[0].toLowerCase();
+    if (body === 'read') return 'read';
+    if (body === 'write' || body === 'edit' || body === 'delete') return 'edit';
+    if (body === 'run') return 'run';
+    if (body === 'search' || body === 'semantic' || body === 'inspect') return 'search';
+    return 'action';
+  }
+
+  function blockTitle(rows, live, secs) {
+    if (live) return 'Running · ' + clock(secs);
+    const n = { tools: 0, reads: 0, writes: 0, thoughts: 0 };
+    for (const r of rows) {
+      // A row with no kind is a thought: what the run was thinking, not work it
+      // delivered, so it belongs to no bucket.
+      if (!r.kind) { n.thoughts += 1; continue; }
+      if (r.kind === 'read') n.reads += 1;
+      else if (r.kind === 'edit') n.writes += 1;
+      else n.tools += 1;
+    }
+    const parts = [];
+    for (const [bucket, verb, noun] of COUNT_BUCKETS) {
+      const count = n[bucket];
+      if (!count) continue;
+      const object = count === 1 ? noun : noun + 's';
+      // Only the phrase that comes first carries the line, so it takes the
+      // capital — the first kept one, not the first of the table.
+      const said = parts.length ? verb : verb[0].toUpperCase() + verb.slice(1);
+      parts.push(said + ' ' + count + ' ' + object);
+    }
+    // Nothing counted, but the stretch was not empty: the run thought without
+    // acting, and the block holds that.
+    return parts.length ? parts.join(' · ') : (n.thoughts ? 'Thinking' : 'No calls');
+  }
+
+  function foldCalls(msgs, taskId, working) {
     const hidden = new Set();
     const at = new Map();
     let i = 0;
@@ -933,36 +1255,76 @@
       const start = i;
       let end = i;
       while (end < msgs.length && foldsUp(msgs[end])) end += 1;
+      // Mirrors `live_stretch`: only the last stretch ticks, so a second run in the
+      // same task can't put a live clock back on the first run's block.
+      const live = working && end === msgs.length;
       const calls = [];
       for (let k = start; k < end; k += 1) {
-        // A delivered file is its own card below the block, so it is not also a
-        // row inside it; the block lists the calls that made the files.
-        if (msgs[k].kind !== 'attach') { calls.push(k); hidden.add(k); }
+        // A delivered file is its own card below the block, and a thought is not a
+        // call, so the rows the counts come from are only the calls.
+        if (msgs[k].kind !== 'attach' && msgs[k].kind !== 'think') calls.push(k);
       }
       const shapes = calls.map((k) => ({ wrote: !!writeVerb(msgs[k]) }));
       const paths = calls.map((k) => writtenPath(msgs[k]));
-      // Mirrors `unique_actions`: the rows the block holds, in the order the run
-      // made the calls, with one row per file it rewrote.
-      const rows = uniqueActions(shapes, paths).map((j) => msgs[calls[j]]);
-      if (rows.length) at.set(start, { id: taskId + ':' + msgs[start].id, rows });
+      // Mirrors `unique_actions`: the calls the block keeps, in the order the run
+      // made them, with one row per file it rewrote.
+      const kept = new Set(uniqueActions(shapes, paths));
+      const slot = new Map();
+      calls.forEach((k, j) => slot.set(k, j));
+      // Walked in the stretch's own order, so a thought sits where the run thought
+      // it instead of gathering at the end.
+      const rows = [];
+      const thought = new Set();
+      for (let k = start; k < end; k += 1) {
+        const j = slot.get(k);
+        if (j !== undefined) { if (kept.has(j)) rows.push(msgs[k]); continue; }
+        // The reasoning is a row of the block it was thought in, and it stays
+        // after the answer lands: the block is where the thinking happened.
+        if (msgs[k].kind === 'think' && String(msgs[k].content || '').trim()) {
+          rows.push(msgs[k]);
+          thought.add(k);
+        }
+      }
+      // A delivered file stays a card of its own, so the block that absorbed the
+      // call that wrote it does not hide it. A thought leaves the timeline only
+      // where its own block took it as a row.
+      for (let k = start; k < end; k += 1) {
+        const m = msgs[k];
+        if (m.kind === 'attach') continue;
+        if (m.kind !== 'think' || thought.has(k)) hidden.add(k);
+      }
+      // The key is the message the stretch answers, not the one it starts with:
+      // while the run is inside, the first message is the "Thinking…" placeholder,
+      // and it is retired as soon as real text arrives. A block keyed on it would
+      // change identity halfway through, so an open click made before the swap
+      // would be orphaned and the block would fold itself back.
+      const anchor = (start > 0 ? msgs[start - 1].id : msgs[start].id);
+      if (rows.length) at.set(start, { id: taskId + ':' + anchor, rows, live });
       i = end;
     }
     return { hidden, at };
   }
 
-  // Open blocks survive the per-tick rebuild, which keeps no DOM. What the user
-  // clicked is remembered as open or shut, so a click wins in both directions and
-  // the newest block still opens on its own.
+  // Open blocks survive the per-tick rebuild, which keeps no DOM. The map holds
+  // only what the user's own click said, and that outranks the rule the blocks
+  // follow by themselves: open while the run is inside the stretch, folded once
+  // its answer lands.
   const groupState = new Map();
   const openGroupRows = new Set();
 
-  function isGroupOpen(blockId, newest) {
-    const held = groupState.get(blockId);
-    return held === undefined ? newest : held;
+  // Mirrors fennec_ui::timeline::block_open.
+  function isGroupOpen(blockId, live) {
+    const chosen = groupState.get(blockId);
+    return chosen === undefined ? live : chosen;
   }
 
   function groupRowOf(m) {
     const d = m.meta || {};
+    // The run's own reasoning, as a row of the block it was thought in. It folded
+    // to seven words like any other row, and its click prints the whole thought.
+    if (m.kind === 'think') {
+      return { icon: '💭', label: thoughtPreview(m.content), status: '', adds: 0, dels: 0, failed: false, msg: m, opens: 'text', kind: null };
+    }
     if (writeVerb(m)) {
       const path = writtenPath(m);
       const name = baseName(d.title || path || 'file');
@@ -974,27 +1336,36 @@
         dels: d.del || 0,
         failed: false,
         msg: m,
+        kind: kindOf(m),
         // Only a delivered card knows how to read the file off disk; the call
         // that made it has its result text, which is what the row shows inline.
         opens: m.kind === 'attach' ? 'file' : 'text',
       };
     }
     const failed = d.status === 'Failed';
+    // A call still in flight carries the loop's live line. foldsUp keeps a Running
+    // card out of every block, so this is the belt to case 'action's braces — if the
+    // fold rule ever lets one in, its row says what the call is doing rather than
+    // the bare "Complete" the field would otherwise fall back to.
+    const running = d.status === 'Running';
+    const prog = running ? d.progress : null;
     return {
       icon: toolMeta(d.toolKind).icon,
       label: shortText(d.path || '', d.title || toolMeta(d.toolKind).label),
-      status: failed ? 'Failed' : (d.duration ? 'Complete · ' + d.duration : 'Complete'),
+      status: prog ? prog.text + (prog.meter ? ' · ' + prog.meter : '')
+        : failed ? 'Failed' : running ? 'running…' : (d.duration ? 'Complete · ' + d.duration : 'Complete'),
       adds: 0, dels: 0, failed,
       msg: m,
+      kind: kindOf(m),
       opens: 'text',
     };
   }
 
-  function renderGroup(blockId, msgs, newest) {
+  function renderGroup(blockId, msgs, live, secs) {
     const rows = msgs.map((m) => groupRowOf(m));
     const failed = rows.filter((r) => r.failed).length;
-    const title = rows.length + ' action' + (rows.length === 1 ? '' : 's');
-    const open = isGroupOpen(blockId, newest);
+    const title = blockTitle(rows, live, secs);
+    const open = isGroupOpen(blockId, live);
     const box = document.createElement('div');
     box.className = 'tool-group';
     box.innerHTML = `
@@ -1005,7 +1376,11 @@
         ${failed ? `<span class="group-failed">${failed} failed</span>` : ''}
       </div>`;
     const head = box.querySelector('.tool-group-header');
+    if (live) head.dataset.live = '1';
     const toggle = () => {
+      // The click records the opposite of what was on screen, so a live block the
+      // user folded stays folded and a settled one they opened stays open — both
+      // outrank the default that would otherwise re-fold or re-open it next tick.
       groupState.set(blockId, !open);
       renderTimeline();
     };
@@ -1016,6 +1391,9 @@
     if (!open) return box;
     const body = document.createElement('div');
     body.className = 'tool-group-body';
+    // The mark renderTimeline pins the scroll by: a block the run is still inside
+    // shows its newest rows, and the answer that ends the run takes the mark off.
+    if (live) body.dataset.live = '1';
     for (const r of rows) {
       const rowKey = blockId + ':' + r.msg.id;
       const rowOpen = openGroupRows.has(rowKey);
@@ -1031,11 +1409,16 @@
         <span class="group-row-status">${escapeHtml(r.status)}</span>`;
       const detail = document.createElement('div');
       detail.className = 'group-row-detail mono-body';
+      const isThought = r.msg.kind === 'think';
       const text = (r.msg.content || '').trim() || (r.msg.meta || {}).diff || '';
       // Opening a row prints the whole path or command above what the call
-      // returned; the folded label only ever carried a name or seven words.
-      const full = (r.msg.meta || {}).path || (r.msg.meta || {}).title || '';
-      detail.textContent = revealText(r.label, full, text) || 'No output was captured for this call.';
+      // returned; the folded label only ever carried a name or seven words. A
+      // thought has no call output to append: its own words are the whole of it,
+      // so the open row prints the reasoning and nothing else.
+      const full = isThought
+        ? String(r.msg.content || '').trim()
+        : revealText(r.label, (r.msg.meta || {}).path || (r.msg.meta || {}).title || '', text);
+      detail.textContent = full || 'No output was captured for this call.';
       const activate = () => {
         if (r.opens === 'text') {
           if (openGroupRows.has(rowKey)) openGroupRows.delete(rowKey); else openGroupRows.add(rowKey);
@@ -1104,43 +1487,102 @@
   // The core loop owns the workspace on disk and answers /api/file for it. The
   // Rust chat backend has no file route and never writes a file, so a chip
   // aimed at it says what is missing instead of showing an empty pane.
+  // A file the user attached is not a file the backend ever had. The browser
+  // hands the page a name, a size and the bytes, and never a location, so the
+  // card keeps the bytes the picker read and this is where the pane gets them.
+  function readAttachmentView(meta) {
+    if (typeof meta.text === 'string') {
+      return {
+        text: meta.text, lines: viewLines(meta.text),
+        bytes: typeof meta.bytes === 'number' ? meta.bytes
+          : new TextEncoder().encode(meta.text).length,
+      };
+    }
+    // An image, or a file whose text never reached the card: what the card does
+    // hold is shown above this line, and there is nothing below it to draw.
+    return {
+      error: (meta.isImage ? 'This attachment is an image'
+        : 'This attachment carries no text')
+        + '; its card holds only the name and the size.',
+    };
+  }
+
+  // The line count the backend reports for the same bytes: a file that ends in a
+  // newline has one line, not one and an empty one.
+  function viewLines(text) {
+    const body = String(text).replace(/\n+$/, '');
+    return body ? body.split(/\r?\n/).length : 0;
+  }
+
   async function readDelivered(m) {
-    const path = (m.meta && m.meta.path) || '';
-    if (!path) return { error: 'This card carries no path to open.' };
+    const meta = m.meta || {};
+    // Only a card with a verb is a delivery: a run created or updated the file,
+    // so the loop owns it and /api/file can read it back. The user's own
+    // attachment has no verb and no path, and asking for one is a 404.
+    if (!meta.verb) return readAttachmentView(meta);
+    const path = meta.path;
     if ((await probeBackendKind()) !== 'core') {
       return { error: 'Preview needs the core agent loop. Point Settings → Connection at fennec-core.' };
     }
-    const root = (m.meta && m.meta.workspace) || runFolder();
+    const root = meta.workspace || runFolder();
     const ws = root ? '&workspace=' + encodeURIComponent(root) : '';
     try {
       const r = await apiFetch('/api/file?path=' + encodeURIComponent(path) + ws);
       if (!r.ok) return { error: 'The backend refused ' + path + ' (HTTP ' + r.status + ').' };
       const j = await r.json();
-      return { text: String(j.content || ''), lines: j.lines };
+      return { text: String(j.content || ''), lines: j.lines, bytes: j.bytes };
     } catch (e) {
       return { error: 'Could not reach the backend: ' + (e && e.message ? e.message : e) };
     }
   }
 
+  // A delivered file opens in the right panel, beside the rest of the run's
+  // context, so the timeline keeps its shape instead of being covered by a
+  // modal. Each open is numbered: two clicks in a row must not let the first
+  // file's text land on top of the second's name.
+  let fileViewSeq = 0;
   async function openDeliveredFile(m) {
-    const dlg = $('file-dialog');
-    if (!dlg) return;
-    const name = (m.meta && m.meta.title) || 'file';
-    $('file-name').textContent = name;
-    $('file-path').textContent = joinPath((m.meta && m.meta.workspace) || runFolder(), (m.meta && m.meta.path) || '');
-    $('file-meta').textContent = 'reading…';
-    const body = $('file-body');
-    body.textContent = '';
-    dlg.showModal();
+    const seq = ++fileViewSeq;
+    const panel = $('file-viewer');
+    if (!panel) return;
+    const meta = m.meta || {};
+    const name = meta.title || 'file';
+    $('file-viewer-name').textContent = name;
+    const where = joinPath(meta.workspace || runFolder(), meta.path || '');
+    const pathEl = $('file-viewer-path');
+    pathEl.textContent = where;
+    // An attached file has no location the page was ever told about, and a blank
+    // row between the name and the size reads as a value that failed to load.
+    pathEl.hidden = !where;
+    $('file-viewer-meta').textContent = 'reading…';
+    $('file-viewer-body').textContent = '';
+    if (!state.inspectorOpen) {
+      state.inspectorOpen = true;
+      localStorage.setItem('fennec-inspector-open', 'true');
+      applyInspectorState();
+    }
+    panel.hidden = false;
     const res = await readDelivered(m);
+    if (seq !== fileViewSeq) return;
     if (res.error) {
-      $('file-meta').textContent = res.error;
-      body.textContent = '';
+      $('file-viewer-meta').textContent = res.error;
       return;
     }
-    $('file-meta').textContent = (res.lines != null ? res.lines + ' lines · ' : '')
-      + formatFileSize(new TextEncoder().encode(res.text).length);
-    body.textContent = res.text;
+    const n = res.lines;
+    // The file's size on disk, which the backend reports: the text shown here is
+    // newline-decoded, so a CRLF file would otherwise read a few bytes short of
+    // the same file in the desktop pane and on the card that delivered it.
+    const bytes = typeof res.bytes === 'number' ? res.bytes : new TextEncoder().encode(res.text).length;
+    $('file-viewer-meta').textContent = (n != null ? n + (n === 1 ? ' line' : ' lines') + ' · ' : '')
+      + formatFileSize(bytes);
+    $('file-viewer-body').textContent = res.text;
+  }
+
+  function closeFileViewer() {
+    const panel = $('file-viewer');
+    if (panel) panel.hidden = true;
+    // Invalidate whatever read is still in flight so it cannot refill a closed panel.
+    fileViewSeq++;
   }
 
   // A delivered path is relative to the workspace the run worked in. The card
@@ -1159,8 +1601,15 @@
   }
 
   async function copyChipPath(m) {
-    const rel = (m.meta && (m.meta.path || m.meta.title)) || '';
-    const text = joinPath((m.meta && m.meta.workspace) || runFolder(), rel);
+    const meta = m.meta || {};
+    // A picked file has no path to copy, and joining its name onto the workspace
+    // would hand the user a location that never held it.
+    if (!meta.verb) {
+      toast('The page is never told where a picked file sits on your disk.', 'info');
+      return;
+    }
+    const rel = meta.path || meta.title || '';
+    const text = joinPath(meta.workspace || runFolder(), rel);
     try {
       await navigator.clipboard.writeText(text);
       toast('Path copied.', 'ok');
@@ -1221,10 +1670,14 @@
     setTimeout(() => document.addEventListener('click', closeChipMenu, { once: true }), 0);
   }
 
-  // ── Render: task queue (only while working AND prompts queued) ────────────
+  // ── Render: task queue (shown whenever prompts wait, working or not) ──────
   function renderQueue() {
     taskQueueList.innerHTML = '';
-    const show = state.queued.length > 0 && isWorking();
+    // A queue item outlives the run that made it. When a run errors or gets
+    // cancelled nothing drains, so the strip has to stay up — otherwise the
+    // waiting prompts, including the ones the agent proposed, are invisible and
+    // unreachable while still on the list.
+    const show = state.queued.length > 0;
     taskQueue.hidden = !show;
     if (!show) return;
 
@@ -1270,9 +1723,9 @@
       const meta = m.meta || {};
       if (m.kind === 'action') {
         const tm = toolMeta(meta.toolKind);
-        if (meta.toolKind) stats.toolKinds[meta.toolKind] = (stats.toolKinds[meta.toolKind] || 0) + 1;
+        if (meta.toolKind && !isDefaultTool(meta.toolKind)) stats.toolKinds[meta.toolKind] = (stats.toolKinds[meta.toolKind] || 0) + 1;
         if (meta.category === 'delegate' || tm.category === 'delegate') stats.delegations.push(meta.title || 'Delegation');
-        else if (tm.category === 'command') stats.commands++;
+        else if (isCommandTool(meta.toolKind) && meta.status === 'Running') stats.commands++;
         else if (tm.category === 'web') stats.webReadings.push(meta.title || tm.label);
         else if (tm.category === 'source') stats.sources.push(meta.title || tm.label);
         if (meta.status === 'Failed') stats.failed++;
@@ -1329,21 +1782,21 @@
       setContextValue('subagents-value', 'No active delegated agents', false);
     }
 
-    // Processes — commands run + stream state
-    const msgCount = task ? task.msgs.length : 0;
+    // Processes — only the commands whose process is still alive
     setContextValue('processes-value',
-      stats.commands + ' command' + (stats.commands !== 1 ? 's' : '') + ' run · ' +
-      msgCount + ' messages · stream ' + (working ? 'active' : 'idle'),
-      stats.commands > 0 || working);
+      stats.commands > 0
+        ? stats.commands + ' command' + (stats.commands !== 1 ? 's' : '') + ' running in the background'
+        : 'No commands running in the background',
+      stats.commands > 0);
 
-    // Skills — distinct tool kinds used
+    // Skills — what the run reached for beyond the tools it always has
     const kinds = Object.keys(stats.toolKinds);
     if (kinds.length > 0) {
       const top = kinds.sort((a, b) => stats.toolKinds[b] - stats.toolKinds[a]).slice(0, 3)
         .map((k) => toolMeta(k).label);
-      setContextValue('skills-value', kinds.length + ' tool kind' + (kinds.length !== 1 ? 's' : '') + ' · ' + top.join(', '), true);
+      setContextValue('skills-value', kinds.length + ' skill' + (kinds.length !== 1 ? 's' : '') + ' · ' + top.join(', '), true);
     } else {
-      setContextValue('skills-value', 'No tool activity yet', false);
+      setContextValue('skills-value', 'Nothing beyond the built-in tools', false);
     }
 
     // Artifacts — produced files / edits
@@ -1391,6 +1844,94 @@
     if (envBackend) {
       envBackend.textContent = state.backendConnected ? 'Connected' : 'Disconnected';
       envBackend.className = 'env-value ' + (state.backendConnected ? 'ok' : 'muted');
+    }
+    renderOutlets();
+  }
+
+  // ── Outlets (/api/outlets) ─────────────────────────────────────────────────
+  // The rows mirror fennec-client/src/agent.rs (Outlet::fennec / openbot and
+  // its outlet_rows), including its three states: never probed, probed
+  // and empty, probed with data. `present` alone would be one word for three
+  // different situations, and the detail is the actionable half — a browser lane
+  // without a transport needs an install, one without a key needs a `setx`, and a
+  // coworker workspace that will not answer has a reason a user can read.
+  const OUTLETS = [
+    { id: 'fennec', label: 'Fennec' },
+    { id: 'openbot', label: 'OpenBot' },
+  ];
+
+  function str(v) { return typeof v === 'string' ? v : ''; }
+
+  // The transport usually lives in the interpreter running core, or in one the
+  // user pinned, and neither needs a note. Anything else does: it says which other
+  // interpreter will really run the loop, and whose uninstall would take it away.
+  function transportNote(o) {
+    const from = str(o.transport_from);
+    if (!from || from === 'this interpreter' || from === 'pinned' || from === 'none') return '';
+    return ' · browser transport ' + from;
+  }
+
+  function outletDetail(id, o) {
+    if (id === 'fennec') {
+      const model = str(o.model) || 'd1.2';
+      if (o.present) {
+        return 'installed — ' + (str(o.interpreter) || 'this interpreter') + transportNote(o) + ' · ' + model;
+      }
+      return o.transport ? 'not installed — ' + model + ' needs LIQUID_API_KEY or LIQUID_ENDPOINT'
+                         : 'not installed — no python with the browser transport';
+    }
+    if (id === 'openbot') {
+      const host = str(o.url);
+      if (str(o.error)) return 'unavailable — ' + str(o.error);
+      if (!o.present) return 'no agent list at ' + host;
+      const n = (Array.isArray(o.agents) ? o.agents : [])
+        .filter((a) => str(a.name) || str(a.id)).length;
+      return n + ' coworker' + (n === 1 ? '' : 's') + ' at ' + host;
+    }
+    return '';
+  }
+
+  // `null` is "the server never told us" — offline, a Rust backend with no such
+  // route, or a request that failed. All three say unknown, because none of them
+  // licenses the claim "not installed".
+  function outletLines(status) {
+    if (!status) return [{ key: 'Outlets', value: 'unknown (agent loop offline)', ok: false }];
+    const rows = OUTLETS.filter((o) => status[o.id])
+      .map((o) => ({
+        key: o.label,
+        value: outletDetail(o.id, status[o.id]),
+        ok: !!status[o.id].present,
+      }));
+    return rows.length ? rows : [{ key: 'Outlets', value: 'the agent server named none', ok: false }];
+  }
+
+  function renderOutlets() {
+    const box = $('env-outlets');
+    if (!box) return;
+    box.replaceChildren();
+    for (const line of state.outlets || outletLines(null)) {
+      const row = document.createElement('div');
+      row.className = 'env-row outlet';
+      const key = document.createElement('span');
+      key.className = 'env-key';
+      key.textContent = line.key;
+      const value = document.createElement('span');
+      // An interpreter path has no good break opportunities, so it wraps by force
+      // rather than being cut - the row that hid it said less than "not installed".
+      value.className = 'env-value wrap ' + (line.ok ? 'ok' : 'muted');
+      value.textContent = line.value;
+      row.append(key, value);
+      box.appendChild(row);
+    }
+  }
+
+  async function loadOutlets() {
+    try {
+      const resp = await apiFetch('/api/outlets');
+      if (!resp.ok) return outletLines(null);
+      return outletLines(await resp.json());
+    } catch (_) {
+      return outletLines(null);
     }
   }
 
@@ -1561,6 +2102,7 @@
       body: JSON.stringify({
         task: prompt, workspace: folder, ...flags,
         require_approval: permissionMode === 'ask', max_steps: 14,
+        reasoning_effort: currentEffort,
       }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -1575,6 +2117,11 @@
     // run — otherwise a second message in the same task would overwrite the
     // first run's answer.
     task.runGen = (task.runGen || 0) + 1;
+    // The previous run's stages say nothing about this one.
+    task.plan = [];
+    // The tokens of this run's answer, held outside the card so a stream that
+    // turns out to be a tool call can be withheld without losing its text.
+    task.streamBuf = '';
   }
 
   function coreStreamMsg(task) {
@@ -1625,19 +2172,77 @@
   function applyCoreStep(task, s, thinkId) {
     const kind = s.type;
     if (kind === 'partial') {
-      const m = coreStreamMsg(task);
-      m.content += (s.content || '');
+      // Tokens arrive before it is known whether the model is answering or
+      // spelling a tool. The buffer holds the run's text so a card is only
+      // created once the stream reads as prose — and once a card exists it
+      // keeps every token, so a call-shaped example inside a real answer
+      // cannot truncate what the user is watching arrive.
+      task.streamBuf = (task.streamBuf || '') + (s.content || '');
+      const live = task.msgs.find((x) => x.kind === 'result' && x.meta
+        && x.meta.coreStream && x.meta.gen === task.runGen);
+      if (live || !looksLikeCall(task.streamBuf, false)) coreStreamMsg(task).content = task.streamBuf;
       if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
     } else if (kind === 'assistant' || kind === 'final') {
+      // The model's own reasoning rides on the assistant step, and it is what the
+      // Thoughts block is for. The placeholder that said "Connecting to engine…"
+      // is filled rather than dropped, so the thought stays above the answer it
+      // produced. `stream` has to come off: the cleanup at the end of a run
+      // deletes the streaming thoughts it thinks never arrived.
+      const reasoning = String(s.reasoning || '').trim();
+      const ph = thinkId != null ? task.msgs.find((x) => x.id === thinkId) : null;
+      if (reasoning) {
+        const t = ph || task.msgs.find((x) => x.kind === 'think' && x.meta && x.meta.coreReason
+          && x.meta.gen === task.runGen);
+        if (t) {
+          t.content = reasoning;
+          t.collapsed = true;
+          t.meta = t.meta || {};
+          t.meta.stream = false;
+          t.meta.coreReason = true;
+          t.meta.gen = task.runGen;
+        } else {
+          const created = pushMsg(task, {
+            author: 'Fennec', content: reasoning, kind: 'think', collapsed: true,
+            meta: { coreReason: true, gen: task.runGen },
+          });
+          // A thought belongs above the answer it produced, and the answer card
+          // can already exist when the text streamed in before the reasoning did.
+          const at = task.msgs.findIndex((x) => x.kind === 'result' && x.meta
+            && x.meta.coreStream && x.meta.gen === task.runGen);
+          if (at >= 0) {
+            task.msgs.splice(task.msgs.length - 1, 1);
+            task.msgs.splice(at, 0, created);
+          }
+        }
+      }
+      if (thinkId && !reasoning) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+      // The loop publishes each call spelling as its own `assistant` step, and
+      // a turn that does not land a call spells the same blob again. As an
+      // "answer" that is the same object over and over, and the call's own row
+      // already says what ran, so a blob never becomes an answer card. The
+      // `final` step is exempt: after the loop's one push-back it is the only
+      // thing the run has to show.
+      if (kind === 'assistant' && looksLikeCall(s.content, (s.tool_calls || []).length > 0)) {
+        const at = task.msgs.findIndex((x) => x.kind === 'result' && x.meta
+          && x.meta.coreStream && x.meta.gen === task.runGen);
+        // The same blob arrives token by token as `partial` before the step that
+        // names the call, so the card it filled goes with it.
+        if (at >= 0) task.msgs.splice(at, 1);
+        task.streamBuf = '';
+        return;
+      }
       const m = coreStreamMsg(task);
       m.content = s.content || m.content;
+      // The step's text is authoritative and fuller than the tokens streamed so
+      // far; the buffer has to agree with it or the next partial would rewind
+      // the answer to what arrived first.
+      task.streamBuf = m.content;
       if (kind === 'final') m.meta.stream = false;
-      if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
     } else if (kind === 'plan') {
-      const text = (s.entries || []).map((e) => (e.status === 'completed' ? '✓ ' : '• ') + e.content).join('\n');
-      let m = task.msgs.find((x) => x.kind === 'think' && x.meta && x.meta.corePlan && x.meta.gen === task.runGen);
-      if (!m) m = pushMsg(task, { author: 'Fennec', content: text, kind: 'think', collapsed: true, meta: { corePlan: true, gen: task.runGen } });
-      else m.content = text;
+      // The loop's stage list is not something the run said — it is what the run
+      // still means to do — so it is task state drawn as a checklist, never a
+      // message row the timeline would fold or count.
+      task.plan = (s.entries || []).map((e) => ({ text: e.content, done: e.status === 'completed' }));
     } else if (kind === 'tool_start') {
       const id = s.id || s.call_id || s.name;
       if (!task.msgs.some((x) => x.meta && x.meta.toolId === id)) {
@@ -1646,6 +2251,29 @@
           meta: { toolId: id, toolKind: s.name, title: describeCall(s.name, s.args).title, status: 'Running' },
         });
       }
+    } else if (kind === 'progress') {
+      // A long call's live line. It is not a step of the run's own account, so it
+      // never becomes a message row: that would add a card to the running block and
+      // move the "ran n tools" counts. It rides on the card its `tool_start` made,
+      // which is what keeps one visible line per in-flight call_id — a newer
+      // progress replaces the older instead of piling up rows. The card stays
+      // Running, so the block stays the live/unfolded one.
+      // The card this belongs to is found by call_id, so an unusable id is as wrong
+      // a shape as a missing text — either way there is nothing to attach the line to.
+      const text = s.text;
+      const id = s.call_id;
+      if (typeof text !== 'string' || !text) return;
+      if (typeof id !== 'string' && typeof id !== 'number') return;
+      if (typeof id === 'string' && !id) return;
+      const m = task.msgs.find((x) => x.meta && x.meta.toolId === id);
+      if (!m) return;
+      // `step`/`of` only ever drive the dim meter, and only when both are there;
+      // either alone renders nothing extra. The loop's words go in verbatim.
+      const step = s.step;
+      const of = s.of;
+      const meter = (Number.isInteger(step) && step > 0 && Number.isInteger(of) && of > 0)
+        ? step + '/' + of : '';
+      m.meta.progress = { text, meter };
     } else if (kind === 'tool') {
       const id = s.id || s.call_id || s.name;
       const status = s.ok ? 'Complete' : 'Failed';
@@ -1664,7 +2292,10 @@
         const args = s.args || {};
         const rec = {
           id, action: s.name || 'action',
-          command: args.command || args.filename || args.path || null,
+          // The loop's own words for the call, the same field the Rust backend
+          // fills: "Run command cargo test", not the tool name and not a bare
+          // argument the card would have to explain.
+          command: describeCall(s.name, args).title || null,
           reason: s.reason || '', risk: s.risk || 'medium',
           status: 'pending', decision: null,
         };
@@ -1675,10 +2306,21 @@
           meta: { approvalId: id, action: rec.action, command: rec.command, reason: rec.reason, risk: rec.risk, status: 'pending', decision: null },
         });
       }
+    } else if (kind === 'queue') {
+      // The loop's own follow-ups for a run it judged complex. They go into the
+      // same list the user's waiting prompts use, so they drain, show and can be
+      // removed exactly the same way. It arrives before the step that ends the
+      // run, so the first one is already waiting when the queue drains.
+      for (const text of s.items || []) {
+        const prompt = String(text || '');
+        if (prompt && !state.queued.includes(prompt)) state.queued.push(prompt);
+      }
+      saveState();
+      renderQueue();
     } else if (kind === 'error') {
-      pushMsg(task, { author: 'Fennec', content: s.content || 'Task error.', kind: 'result', collapsed: false });
+      noteEnd(task, s.content || 'Task error.');
     } else if (kind === 'cancelled') {
-      pushMsg(task, { author: 'Fennec', content: 'Task cancelled.', kind: 'result', collapsed: false });
+      noteEnd(task, 'Task cancelled.');
     }
   }
 
@@ -1696,12 +2338,13 @@
         if (!r.ok) break;
         j = await r.json();
       } catch (_) { break; }
-      after = j.total != null ? j.total : after + (j.steps || []).length;
-      for (const s of (j.steps || [])) applyCoreStep(task, s, thinkId);
+      const arrived = (j.steps || []).length;
+      after = j.total != null ? j.total : after + arrived;
+      for (const s of j.steps) applyCoreStep(task, s, thinkId);
       const live = j.pending || [];
       // A question the loop dropped was answered in another window or timed out
       // in the loop itself; either way it is no longer ours to answer, exactly
-      // as the native lane treats it (gui_main.rs CoreEvent::Pending).
+      // as the native lane treats it (fennec-desktop/src/gui_main.rs CoreEvent::Pending).
       expireApprovals(task, EXPIRED_GONE, live);
       if (live.length) task.status = 'WaitingForApproval';
       else if (task.status === 'WaitingForApproval') task.status = 'Running';
@@ -1713,11 +2356,14 @@
         finalizeTask(task);
         return;
       }
-      // Blocked on the user is not slow: don't let the timeout kill it.
-      if (live.length) attempts = 0; else attempts++;
+      // Blocked on the user is not slow, and neither is a run that keeps
+      // talking. The budget counts silence: a complex task runs for minutes and
+      // the queue it proposes arrives at the end of that, so a wall-clock cap on
+      // the whole run failed the one task type it exists to serve.
+      if (live.length || arrived) attempts = 0; else attempts++;
     }
     if (task.status === 'Running' || task.status === 'WaitingForApproval') {
-      pushMsg(task, { author: 'Fennec', content: 'Response timed out.', kind: 'result', collapsed: false });
+      noteEnd(task, 'Response timed out.');
       task.status = 'Failed';
       finalizeTask(task);
     }
@@ -1748,7 +2394,11 @@
       return;
     }
 
-    state.queued = [];
+    // A manual send while idle does not empty the queue. What waits there —
+    // the user's own prompts, and the follow-ups an agent proposed for a run
+    // that ended without draining them — goes on behind this prompt, as it does
+    // in the native shell, which never clears `queued` on send. Wiping here
+    // would silently throw away work the agent asked for.
 
     // Ensure a task exists — created only on a real send, never as a draft.
     if (!state.activeId) {
@@ -1773,14 +2423,24 @@
     if (text) task.title = text.slice(0, 80);
     task.status = 'Running';
     task.finalized = false;
+    task.endNoted = false;
     task.startedAt = Date.now();
 
     pushMsg(task, { author: 'Liso7150', content: text || '(attachments)', kind: 'user', collapsed: false });
 
     for (const att of attachments) {
+      // The card keeps what the picker read, because it is the only copy the
+      // page can open: a browser hands over a name, a size and the bytes, and
+      // never the file's location, so there is no path for the backend to read.
       pushMsg(task, {
         author: 'Liso7150', content: 'Attached: ' + att.name, kind: 'attach', collapsed: false,
-        meta: { title: att.name, path: '.', size: formatFileSize(att.size), isImage: att.isImage },
+        meta: {
+          title: att.name,
+          size: formatFileSize(att.size),
+          bytes: att.size,
+          isImage: att.isImage,
+          text: att.isImage || att.text == null ? null : att.text,
+        },
       });
     }
 
@@ -1937,7 +2597,16 @@
         });
       } else {
         const m = task.msgs.find((x) => x.meta && x.meta.approvalId === ba.id);
-        if (m) { m.meta.status = rec.status; m.meta.decision = rec.decision; }
+        // Never hand the buttons back. An answer this client already sent
+        // outranks a backend list that has not caught up with it, and a card
+        // that flipped back to pending would reappear in the run it left.
+        if (m && m.meta.status === 'resolved') {
+          rec.status = 'resolved';
+          if (rec.decision == null) rec.decision = m.meta.decision;
+        } else if (m) {
+          m.meta.status = rec.status;
+          m.meta.decision = rec.decision;
+        }
       }
     }
 
@@ -1962,13 +2631,19 @@
     if (settings.notifications && 'Notification' in window && Notification.permission === 'granted' && task.status === 'Complete') {
       try { new Notification('Fennec task complete', { body: task.title }); } catch (_) {}
     }
-    if (task.status === 'Complete') drainQueue();
+    // The queue drains whenever a run stops, not only when it answers. A
+    // cancelled or failed run left its follow-ups parked at "Next" with nothing
+    // ever picking them up, which is what made the strip read as a stack that
+    // never moves; the native shell drains on any non-running status, and
+    // `drainQueue` refuses to start anything while another run is going.
+    drainQueue();
   }
 
   async function pollTask(task, thinkId) {
     if (task.polling) return;
     task.polling = true;
     let attempts = 0;
+    let sawMsgs = -1;
     while (attempts < POLL_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       if (state.tasks.indexOf(task) === -1) { task.polling = false; return; } // deleted
@@ -1989,19 +2664,20 @@
         finalizeTask(task);
         return;
       }
-      // A run blocked on the user is not slow: don't let the timeout kill it.
-      if (bt.status === 'WaitingForApproval') attempts = 0;
+      // A run blocked on the user is not slow, and neither is one still
+      // delivering messages: like `pollCore`, the budget counts silence.
+      const reached = (bt.messages || []).length;
+      if (bt.status === 'WaitingForApproval' || reached > sawMsgs) attempts = 0;
       else attempts++;
+      sawMsgs = reached;
     }
 
     // Timed out or backend unreachable.
     if (task.status === 'Running' || task.status === 'Planning') {
       if (thinkId) task.msgs = task.msgs.filter((m) => m.id !== thinkId);
-      pushMsg(task, {
-        author: 'Fennec',
-        content: attempts >= POLL_MAX_ATTEMPTS ? 'Response timed out.' : 'Lost contact with the backend while waiting for the response.',
-        kind: 'result', collapsed: false,
-      });
+      noteEnd(task, attempts >= POLL_MAX_ATTEMPTS
+        ? 'Response timed out.'
+        : 'Lost contact with the backend while waiting for the response.');
       task.status = 'Failed';
       finalizeTask(task);
     }
@@ -2011,14 +2687,27 @@
   async function stopTask() {
     const task = activeTask();
     if (!task || !isWorking()) return;
-    if (task.backendId) {
-      try {
-        await apiFetch('/api/tasks/' + encodeURIComponent(task.backendId) + '/stop', { method: 'POST' });
-      } catch (_) { /* offline — cancel locally */ }
-    }
+    // The status goes away before the request does: the send button doubles as
+    // Stop while a run is live, and a second click used to pass `isWorking()`
+    // again and write a second stop card for the same ending.
     task.status = 'Cancelled';
     task.msgs = task.msgs.filter((m) => !(m.kind === 'think' && m.meta && m.meta.stream && (m.meta.chunks || 0) === 0));
-    pushMsg(task, { author: 'Fennec', content: 'Task stopped by user.', kind: 'result', collapsed: false });
+    noteEnd(task, 'Task stopped by user.');
+    if (task.backendId) {
+      // /api/tasks/:id/stop is the Rust server's route; the core loop that gates
+      // tools is stopped by /api/agent/cancel, so asking the wrong one leaves the
+      // run burning the engine while the UI says it was cancelled.
+      const stop = (task.core || backendKind === 'core')
+        ? apiFetch('/api/agent/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: task.backendId }),
+          })
+        : apiFetch('/api/tasks/' + encodeURIComponent(task.backendId) + '/stop', { method: 'POST' });
+      try {
+        await stop;
+      } catch (_) { /* offline — cancel locally */ }
+    }
     finalizeTask(task);
     toast('Task stopped.', 'info');
   }
@@ -2183,7 +2872,9 @@
         const record = {
           id,
           action: a.action || a.name || 'action',
-          command: a.command || args.command || args.filename || args.path || null,
+          // The loop's own words, so a gate reported over the event stream reads
+          // the same as one read off a poll step.
+          command: a.command || describeCall(a.action || a.name, args).title || null,
           reason: a.reason || '',
           risk: a.risk_level || a.risk || 'medium',
           status: 'pending',
@@ -2285,15 +2976,25 @@
   }
 
   async function checkHealth() {
+    let payload = null;
     try {
       // /api/health is the one route both backends answer; /health is Rust-only,
       // so probing it read a running core as offline.
       const resp = await apiFetch('/api/health');
       state.backendConnected = resp.ok;
+      if (resp.ok) payload = await resp.json().catch(() => null);
     } catch (_) {
       state.backendConnected = false;
     }
+    // Only the Python agent server probes outlets, and only its payload says it is
+    // answering. The Rust backend has no /api/outlets at all, so asking it would
+    // render every lane as a row of nothing.
+    state.outlets = payload && payload.app ? await loadOutlets() : outletLines(null);
     updateBackendStatus();
+    // A queue that survived a page reload had no finishing run to hand it off
+    // to, so it sat at "Next" with nothing able to start it. Once the backend
+    // answers and no run is going, the head of the queue goes to work.
+    if (state.backendConnected) drainQueue();
   }
 
   // ── Models ─────────────────────────────────────────────────────────────────
@@ -2359,6 +3060,29 @@
       toast('Model download coming soon.', 'info');
     });
     dd.appendChild(dl);
+    const sep2 = document.createElement('div');
+    sep2.className = 'model-dropdown-sep';
+    dd.appendChild(sep2);
+    const head = document.createElement('div');
+    head.className = 'model-dropdown-label';
+    head.textContent = 'Reasoning';
+    dd.appendChild(head);
+    for (const level of EFFORT_LEVELS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'model-option' + (level.id === currentEffort ? ' active' : '');
+      btn.innerHTML = `<span class="model-option-name">${escapeHtml(level.name)}</span><span class="model-option-check">✓</span>`;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        currentEffort = level.id;
+        localStorage.setItem('fennec-effort', currentEffort);
+        dd.hidden = true;
+        $('model-trigger').setAttribute('aria-expanded', 'false');
+        renderModelDropdown();
+        toast('Reasoning set to ' + level.name.toLowerCase() + '.', 'good');
+      });
+      dd.appendChild(btn);
+    }
   }
 
   // ── Permission mode ────────────────────────────────────────────────────────
@@ -2434,7 +3158,7 @@
     return out;
   }
 
-  // The four answers the core loop accepts (fennec_core/loop.py:_APPROVAL_OPTIONS),
+  // The four answers the core loop accepts (loop.py:_APPROVAL_OPTIONS),
   // worded as the desktop shells word them (fennec-ui/src/attention.rs) so the
   // same answer reads the same on every surface.
   const APPROVAL_DECISIONS = [
@@ -2575,7 +3299,8 @@
         row.dataset.focus = 'cmd:' + task.id + ':' + (approval.id || '');
         row.setAttribute('role', 'button');
         row.setAttribute('aria-label', 'Go to task: ' + (task.title || 'untitled'));
-        const cmd = approval.command || approval.action || 'action';
+        // The same words the card asked with, never the tool's own name.
+        const cmd = gateTitle(approval.action, approval.command);
         // The dot carries the risk the gate reported (as the desktop rail does);
         // the decision word says allow or reject.
         const risk = approval.risk || 'unknown';
@@ -2635,7 +3360,10 @@
   }
 
   // ── Workspace creation dialog (parity with the native gpui dialog) ─────────
-  const WS_ICONS = ['📁', '💻', '🔬', '🧪', '🎨', '🤖', '⚙️', '🔧', '📦', '🚀'];
+  const WS_ICONS = [
+    '📁', '💻', '🔬', '🧪', '🎨', '🤖', '⚙️', '🔧', '📦', '🚀',
+    '🌐', '📚', '🗂', '📝', '🧭', '🛠', '📡', '🔥', '🧠', '🎯',
+  ];
   const WS_COLORS = [
     { name: 'orange', css: '#d97706' }, { name: 'green', css: '#22c55e' },
     { name: 'blue', css: '#3b82f6' }, { name: 'yellow', css: '#eab308' },
@@ -2659,6 +3387,102 @@
       ul.appendChild(li);
     });
   }
+
+  // The source-folder chooser. A page cannot read an absolute disk path back off
+  // a browser folder prompt, so this browses the core's own listing instead:
+  // /api/files is jailed to the configured workspace root, so every folder the
+  // browser can offer is one the agent run will accept too.
+  const wsBrowse = { rel: '.', root: '', dirs: [], status: '' };
+
+  function joinRel(rel, name) {
+    return rel === '.' || rel === '' ? name : rel + '/' + name;
+  }
+
+  function parentRel(rel) {
+    const parts = (rel || '.').split('/').filter(Boolean);
+    parts.pop();
+    return parts.length ? parts.join('/') : '.';
+  }
+
+  function browseLabel(rel) {
+    if (!wsBrowse.root) return rel === '.' ? '/' : rel;
+    const root = wsBrowse.root.replace(/[\\/]+$/, '');
+    if (rel === '.' || rel === '') return root;
+    const sep = root.includes('\\') ? '\\' : '/';
+    return root + sep + rel.split('/').join(sep);
+  }
+
+  function renderWsBrowser() {
+    const list = $('ws-browser-list');
+    const atRoot = wsBrowse.rel === '.' || wsBrowse.rel === '';
+    $('ws-browser-path').textContent = browseLabel(wsBrowse.rel);
+    $('ws-browser-up').disabled = atRoot;
+    list.innerHTML = '';
+    if (wsBrowse.status) {
+      const li = document.createElement('li');
+      li.className = 'ws-browser-empty';
+      li.textContent = wsBrowse.status;
+      list.appendChild(li);
+      return;
+    }
+    if (!atRoot) {
+      const up = document.createElement('li');
+      up.innerHTML = '<button class="ws-browser-dir" type="button" data-up>↑ ..</button>';
+      up.querySelector('button').addEventListener('click', () => browseFolders(parentRel(wsBrowse.rel)));
+      list.appendChild(up);
+    }
+    for (const d of wsBrowse.dirs) {
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ws-browser-dir';
+      b.textContent = '📁 ' + d.name;
+      b.addEventListener('click', () => browseFolders(d.rel));
+      li.appendChild(b);
+      list.appendChild(li);
+    }
+    if (atRoot && wsBrowse.dirs.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'ws-browser-empty';
+      li.textContent = 'No folders here.';
+      list.appendChild(li);
+    }
+  }
+
+  async function browseFolders(rel) {
+    wsBrowse.rel = rel;
+    wsBrowse.dirs = [];
+    wsBrowse.status = 'Loading…';
+    renderWsBrowser();
+    try {
+      const resp = await apiFetch('/api/files?path=.&workspace=' + encodeURIComponent(rel));
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const j = await resp.json();
+      const entries = Array.isArray(j.entries) ? j.entries : [];
+      wsBrowse.dirs = entries.filter((e) => e && e.is_dir)
+        .map((e) => ({ name: e.name, rel: joinRel(rel, e.path) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      wsBrowse.status = '';
+    } catch (_) {
+      wsBrowse.dirs = [];
+      wsBrowse.status = 'The core is not answering, so the list is empty. Type a folder path instead.';
+    }
+    renderWsBrowser();
+  }
+
+  async function openWsBrowser() {
+    const panel = $('ws-folder-browser');
+    panel.hidden = false;
+    if (!wsBrowse.root) {
+      try {
+        const j = await (await apiFetch('/api/health')).json();
+        wsBrowse.root = (j && j.workspace) || '';
+      } catch (_) { /* the listing still works with relative names */ }
+    }
+    await browseFolders(wsBrowse.rel);
+  }
+
+  function closeWsBrowser() { $('ws-folder-browser').hidden = true; }
 
   function renderWsGrids() {
     const ig = $('ws-icon-grid');
@@ -2687,9 +3511,11 @@
 
   function openWorkspaceDialog() {
     wsDraft.icon = 0; wsDraft.color = 0; wsDraft.folders = []; wsDraft.indexed = true;
+    wsBrowse.rel = '.'; wsBrowse.dirs = []; wsBrowse.status = '';
     $('ws-name').value = '';
     $('ws-folder-input').value = '';
     $('ws-indexed').checked = true;
+    closeWsBrowser();
     renderWsFolders();
     renderWsGrids();
     $('workspace-dialog').showModal();
@@ -2703,6 +3529,18 @@
       wsDraft.folders.push(p);
       $('ws-folder-input').value = '';
       renderWsFolders();
+    });
+    $('ws-folder-browse').addEventListener('click', () => {
+      if ($('ws-folder-browser').hidden) openWsBrowser(); else closeWsBrowser();
+    });
+    $('ws-browser-up').addEventListener('click', () => browseFolders(parentRel(wsBrowse.rel)));
+    $('ws-browser-close').addEventListener('click', closeWsBrowser);
+    $('ws-browser-choose').addEventListener('click', () => {
+      const p = browseLabel(wsBrowse.rel);
+      if (!wsDraft.folders.includes(p)) wsDraft.folders.push(p);
+      renderWsFolders();
+      closeWsBrowser();
+      toast('Folder "' + p + '" added.', 'good');
     });
     $('ws-folder-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); $('ws-folder-add').click(); }
@@ -2913,9 +3751,8 @@
     }
   });
 
-  // Inspector toggles (top-right + panel header)
+  // Inspector toggle (top-right; the panel has no header of its own)
   $('inspector-toggle').addEventListener('click', toggleInspector);
-  $('inspector-collapse').addEventListener('click', toggleInspector);
   applyInspectorState();
 
   // Composer tools
@@ -2993,12 +3830,9 @@
     diffDialog.addEventListener('click', (e) => { if (e.target === diffDialog) diffDialog.close(); });
   }
 
-  // Delivered file preview close
-  const fileDialog = $('file-dialog');
-  if (fileDialog) {
-    $('file-close').addEventListener('click', () => fileDialog.close());
-    fileDialog.addEventListener('click', (e) => { if (e.target === fileDialog) fileDialog.close(); });
-  }
+  // Delivered file preview: the FILE section of the right panel, dismissed with ×.
+  const fileViewerClose = $('file-viewer-close');
+  if (fileViewerClose) fileViewerClose.addEventListener('click', closeFileViewer);
 
   // Workspaces
   const btnAddWorkspace = $('btn-add-workspace');
@@ -3043,5 +3877,7 @@
   syncBackendRepositories();
 
   setInterval(checkHealth, 30000);
-  setInterval(() => { if (isWorking()) renderRightPanel(); }, 1000);
+  // The running block carries a timer, so the clock has to be redrawn while the
+  // run is in progress and not only when a step lands.
+  setInterval(() => { if (isWorking()) { tickTimer(); renderRightPanel(); } }, 1000);
 })();

@@ -13,7 +13,7 @@
   <link rel="icon" href="./icons/icon.svg?v=1" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png?v=1">
   <link rel="manifest" href="./manifest.webmanifest?v=1">
-  <link rel="stylesheet" href="./styles.css?v=14">
+  <link rel="stylesheet" href="./styles.css?v=25">
 </head>
 <body>
   <a class="skip-link" href="#composer-input">Skip to composer</a>
@@ -186,12 +186,17 @@
 
     <!-- Right panel: Context Inspector -->
     <aside class="right-panel" id="right-panel" aria-label="Context Inspector">
-      <div class="inspector-header">
-        <div>
-          <div class="inspector-title">Workspace context</div>
-          <div class="inspector-subtitle">Inspector</div>
+      <!-- Delivered file: the card in the timeline opens the file it names here,
+           next to the rest of the run's context, instead of over the app. -->
+      <div class="inspector-section file-viewer" id="file-viewer" hidden>
+        <div class="inspector-section-header">
+          <span>FILE</span>
+          <button class="icon-button" type="button" aria-label="Close file" id="file-viewer-close">×</button>
         </div>
-        <button class="icon-button" type="button" aria-label="Collapse inspector" id="inspector-collapse">⊟</button>
+        <div class="file-viewer-name" id="file-viewer-name"></div>
+        <div class="file-path mono muted" id="file-viewer-path"></div>
+        <div class="file-viewer-meta muted" id="file-viewer-meta"></div>
+        <pre class="file-viewer-body mono" id="file-viewer-body"></pre>
       </div>
 
       <!-- Active Agents -->
@@ -271,6 +276,9 @@
           <span class="env-key">Backend</span>
           <span class="env-value ok" id="env-backend">Connected</span>
         </div>
+        <!-- One row per browser outlet /api/outlets reported, in core's order.
+             Built by app.js because the set is the server's, not this file's. -->
+        <div id="env-outlets"></div>
       </div>
 
     </aside>
@@ -399,8 +407,20 @@
 
       <span class="ws-field-label">Source folders</span>
       <div class="ws-folder-add">
-        <input type="text" id="ws-folder-input" class="ws-folder-input" placeholder="Absolute folder path" autocomplete="off">
+        <input type="text" id="ws-folder-input" class="ws-folder-input" placeholder="Folder path under the workspace root" autocomplete="off">
+        <button class="button ghost" type="button" id="ws-folder-browse">Browse…</button>
         <button class="button ghost" type="button" id="ws-folder-add">Add</button>
+      </div>
+      <div class="ws-folder-browser" id="ws-folder-browser" hidden>
+        <div class="ws-browser-bar">
+          <button class="ws-browser-up" type="button" id="ws-browser-up" aria-label="Up one level">↑</button>
+          <span class="ws-browser-path" id="ws-browser-path"></span>
+        </div>
+        <ul class="ws-browser-list" id="ws-browser-list"></ul>
+        <div class="ws-browser-foot">
+          <button class="button primary" type="button" id="ws-browser-choose">Choose this folder</button>
+          <button class="button ghost" type="button" id="ws-browser-close">Close</button>
+        </div>
       </div>
       <ul class="ws-folder-list" id="ws-folder-list"></ul>
 
@@ -437,23 +457,25 @@
     <pre id="diff-body" class="diff-body mono"></pre>
   </dialog>
 
-  <!-- Delivered file preview -->
-  <dialog id="file-dialog" aria-labelledby="file-title">
+  <!-- Destructive-action confirmation (mirrors the native gpui dialog) -->
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <div class="dialog-header">
-      <h2 id="file-title">Delivered file</h2>
-      <button class="icon-button" type="button" aria-label="Close file" id="file-close">×</button>
+      <h2 id="confirm-title">Delete Task</h2>
+      <button class="icon-button" type="button" id="confirm-cancel-x" aria-label="Close">×</button>
     </div>
-    <div class="diff-meta">
-      <span id="file-name" class="mono"></span>
-      <span id="file-meta" class="muted"></span>
+    <div class="dialog-body confirm-body">
+      <p class="confirm-detail" id="confirm-detail"></p>
+      <div class="confirm-subject" id="confirm-subject"></div>
     </div>
-    <div id="file-path" class="file-path mono muted"></div>
-    <pre id="file-body" class="diff-body mono"></pre>
+    <div class="dialog-footer">
+      <button class="button ghost" type="button" id="confirm-cancel">Cancel</button>
+      <button class="button primary" type="button" id="confirm-action">Delete</button>
+    </div>
   </dialog>
 
   <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
   <noscript><div class="noscript">JavaScript is required for Fennec Workspace.</div></noscript>
-  <script src="./app.js?v=21" defer></script>
+  <script src="./app.js?v=41" defer></script>
 </body>
 </html>

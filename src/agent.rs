@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentIdentity {
     Fennec,
-    Jev,
     OpenBot,
     Planner,
     RepositoryInspector,
@@ -73,7 +72,6 @@ mod tests {
     fn agent_identity_round_trips_through_json() {
         let identities = vec![
             AgentIdentity::Fennec,
-            AgentIdentity::Jev,
             AgentIdentity::OpenBot,
             AgentIdentity::Planner,
             AgentIdentity::RepositoryInspector,
@@ -123,7 +121,7 @@ mod tests {
     #[test]
     fn agent_with_no_task_serializes_null() {
         let agent = Agent {
-            identity: AgentIdentity::Jev,
+            identity: AgentIdentity::OpenBot,
             status: AgentStatus::Offline,
             capabilities: vec![],
             current_task: None,

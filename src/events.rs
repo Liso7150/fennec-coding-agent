@@ -103,7 +103,6 @@ pub struct ChatMessage {
 pub enum MessageRole {
     User,
     Fennec,
-    Jev,
     OpenBot,
     Tool,
     System,
@@ -377,7 +376,7 @@ mod tests {
     #[test]
     fn event_envelope_builder_chain() {
         let task_id = TaskId("task-123".to_string());
-        let event = EventEnvelope::new(AgentIdentity::Jev, EventType::MessageCreated)
+        let event = EventEnvelope::new(AgentIdentity::OpenBot, EventType::MessageCreated)
             .with_task(task_id.clone())
             .with_progress(0.5, "running".to_string())
             .with_payload(serde_json::json!({"key": "value"}))
@@ -428,7 +427,6 @@ mod tests {
         let roles = vec![
             MessageRole::User,
             MessageRole::Fennec,
-            MessageRole::Jev,
             MessageRole::OpenBot,
             MessageRole::Tool,
             MessageRole::System,

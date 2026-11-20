@@ -15,13 +15,13 @@ Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
 **fennec-coding-agent** (this repo):
 - Rust/Axum web backend service
 - Task orchestration and lifecycle management
-- Agent delegation (Fennec, JEV, OpenBot)
+- Agent identities carried on every event (Fennec, OpenBot, worker roles)
 - Repository operations and Git workflow
 - Real-time event streaming (SSE + WebSocket)
 - Serves web interface on `http://127.0.0.1:8787`
 
 **fennec-desktop**:
-- Native Rust desktop application (egui/eframe)
+- The one native window in the suite: a Rust gpui-kit application
 - Primary developer workspace UI
 - Connects to this backend for agent operations
 
@@ -39,9 +39,9 @@ Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
 - Approval workflow for destructive operations
 
 ### Agent Orchestration
-- **Fennec** — primary coding agent
-- **JEV** — specialized delegation for repository migration and architecture analysis
-- **OpenBot** — code review, test generation, documentation automation
+- **Fennec** — primary coding agent, and the identity `web_task` runs under: the browser lane is Fennec's own loop, decided one step at a time by a Liquid **d1** model (the hosted `d1.2`, or a free local `d1-2B`); every event identity can also be a worker role (`Planner`, `RepositoryInspector`, `ImplementationWorker`, `VerificationWorker`, `ResearchWorker`, `VisionAnalyzer`)
+- **OpenBot** — coworker-outlet identity behind `coworker_task`, driven over its own loopback AG-UI routes
+- The outlet lanes are decided and driven in `fennec-core`; this repo names them on the event envelope and draws them in the timeline
 - Unified timeline showing all agent activity
 - Delegation with structured results and follow-up recommendations
 

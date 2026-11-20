@@ -11,13 +11,7 @@ description = "Fennec coding agent: Rust web backend for task orchestration, age
 name = "fennec-agent"
 path = "src/main.rs"
 
-[[bin]]
-name = "fennec-agent-gui"
-path = "src/gui_main.rs"
-required-features = ["gui"]
-
 [dependencies]
-gpui-kit = { version = "0.10.0", optional = true }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1.0", features = ["full"] }
 tower = "0.4"
@@ -34,18 +28,10 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 fennec-client = { path = "../fennec-core/src/fennec-client" }
 fennec-economy = { path = "../fennec-economy" }
-fennec-ui = { path = "../fennec-ui" }
 dirs = "5.0"
 sha2 = "0.10"
 hex = "0.4"
 tempfile = "3.10"
-cpal = "0.15"
-hound = "3.5"
-base64 = "0.22"
-
-[features]
-default = []
-gui = ["gpui-kit"]
 
 [profile.release]
 opt-level = 3
