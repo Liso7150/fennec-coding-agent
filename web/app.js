@@ -1849,7 +1849,7 @@
   }
 
   // ── Outlets (/api/outlets) ─────────────────────────────────────────────────
-  // The rows mirror fennec-client/src/agent.rs (Outlet::fennec / openbot and
+  // The rows mirror fennec-client/src/agent.rs (Outlet::fennec / openbot / antigravity and
   // its outlet_rows), including its three states: never probed, probed
   // and empty, probed with data. `present` alone would be one word for three
   // different situations, and the detail is the actionable half — a browser lane
@@ -1858,6 +1858,7 @@
   const OUTLETS = [
     { id: 'fennec', label: 'Fennec' },
     { id: 'openbot', label: 'OpenBot' },
+    { id: 'antigravity', label: 'Antigravity' },
   ];
 
   function str(v) { return typeof v === 'string' ? v : ''; }
@@ -1887,6 +1888,10 @@
       const n = (Array.isArray(o.agents) ? o.agents : [])
         .filter((a) => str(a.name) || str(a.id)).length;
       return n + ' coworker' + (n === 1 ? '' : 's') + ' at ' + host;
+    }
+    if (id === 'antigravity') {
+      if (o.present) return 'installed — read-only workspace tools';
+      return str(o.error) || 'not configured — install SDK, credentials and workspace';
     }
     return '';
   }

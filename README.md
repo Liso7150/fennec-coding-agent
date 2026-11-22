@@ -29,6 +29,11 @@ Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
 - Command-line interface
 - Console access to backend operations
 
+External connectors belong in `fennec-core`, not either UI surface. Nod uses the core's opt-in,
+read-only MCP endpoint; Obsidian is not integrated and must remain an external application if a
+future, explicitly approved vault connector is added. Neither surface embeds Node.js, Electron, or
+an Obsidian plugin runtime.
+
 ## Features
 
 ### Task Management
