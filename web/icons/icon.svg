@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fennec">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fennec fox">
   <rect width="512" height="512" rx="112" fill="#1a1a17"/>
-  <circle cx="256" cy="256" r="118" fill="none" stroke="#eca17d" stroke-width="54"
-          stroke-linecap="round" stroke-dasharray="556 186"/>
-  <circle cx="362" cy="150" r="20" fill="#b7c9a3"/>
+  <path d="M96 126 204 64l52 74 52-74 108 62-24 220-136 110L120 346 96 126Z" fill="#eca17d"/>
+  <path d="m128 148 76-44 38 62-70 46-44-64Zm256 0-76-44-38 62 70 46 44-64Z" fill="#1a1a17"/>
+  <path d="m126 238 102-26 28 54-76 28-54-56Zm260 0-102-26-28 54 76 28 54-56Z" fill="#1a1a17"/>
+  <path d="m224 350 32-24 32 24-32 34-32-34Z" fill="#1a1a17"/>
 </svg>
