@@ -28,13 +28,12 @@
         <path d="m10 16 2-1 2 1-2 2-2-2Z" fill="var(--bg)"/>
       </svg>
       <span class="brand-name">Fennec</span>
-      <span class="brand-subtitle">Foxen / local-first workspace</span>
     </div>
     <div class="topbar-status">
       <span class="status-dot" data-state="online"></span>
       <span class="status-text" id="backend-status">Backend connected</span>
-      <button id="settings-button" class="icon-button" type="button" aria-label="Settings">⚙</button>
-      <button id="inspector-toggle" class="icon-button" type="button" aria-label="Toggle inspector">⊟</button>
+      <button id="settings-button" class="icon-button topbar-action" type="button" aria-label="Open settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42"/><circle cx="12" cy="12" r="3.5"/></svg></button>
+      <button id="inspector-toggle" class="icon-button topbar-action" type="button" aria-label="Hide context panel" title="Hide context panel" aria-pressed="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
     </div>
   </header>
 
@@ -44,39 +43,40 @@
     <!-- Left panel: Navigation -->
     <aside class="left-panel" aria-label="Navigation">
       <div class="workspace-section">
-        <div class="section-label">ACTIVE WORKSPACE</div>
-        <div class="workspace-name" id="workspace-name">Foxen/fennec</div>
+        <div class="section-label">Working in</div>
+        <div class="workspace-name" id="workspace-name">fennec</div>
         <div class="workspace-meta">
           <span class="branch-name" id="branch-name">main</span>
           <span>·</span>
-          <span>Local mode</span>
+          <span class="version-badge">1.0.0</span>
+          <span>working tree</span>
         </div>
       </div>
 
       <nav class="nav-section">
         <button class="nav-item active" data-nav="coding" type="button">
-          <span class="nav-icon">⊞</span>
-          <span class="nav-label">Coding</span>
+          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6h12M6 12h12M6 18h12"/></svg></span>
+          <span class="nav-label">Recent tasks</span>
         </button>
         <button class="nav-item" data-nav="new-task" type="button">
-          <span class="nav-icon">⊕</span>
-          <span class="nav-label">New Task</span>
+          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span class="nav-label">New task</span>
         </button>
         <button class="nav-item" data-nav="attention" type="button">
-          <span class="nav-icon">◷</span>
-          <span class="nav-label">My Attention</span>
+          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
+          <span class="nav-label">My attention</span>
           <span class="nav-badge" id="attention-badge" hidden>0</span>
         </button>
         <button class="nav-item" data-nav="search" type="button">
-          <span class="nav-icon">⌕</span>
+          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></svg></span>
           <span class="nav-label">Search</span>
         </button>
       </nav>
 
       <div class="workspaces-section">
         <div class="section-header">
-          <span class="section-label">WORKSPACES</span>
-          <button class="icon-button-small" type="button" aria-label="Add workspace" id="btn-add-workspace">+</button>
+          <span class="section-label">Workspaces</span>
+          <button class="icon-button-small" type="button" aria-label="Add workspace" title="Add workspace" id="btn-add-workspace"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></button>
         </div>
         <input type="search" id="task-search" placeholder="Filter tasks…" hidden>
         <ul class="workspace-list" id="workspace-list" aria-label="Workspaces and tasks">
@@ -85,8 +85,8 @@
       </div>
 
       <div class="user-section">
-        <div class="user-name">Foxen</div>
-        <div class="user-account">Local account</div>
+        <button class="github-account-button" type="button" id="github-account-button" aria-label="GitHub account: checking" title="GitHub account"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 0 0-2.84 17.54c.45.08.62-.2.62-.43v-1.52c-2.52.55-3.05-1.06-3.05-1.06-.41-1.05-1-1.33-1-1.33-.82-.56.06-.55.06-.55.91.06 1.39.94 1.39.94.8 1.39 2.1.99 2.61.76.08-.59.31-.99.57-1.22-2.01-.23-4.12-1-4.12-4.46 0-.99.35-1.8.93-2.44-.09-.23-.4-1.15.09-2.4 0 0 .76-.24 2.48.93a8.6 8.6 0 0 1 4.52 0c1.72-1.17 2.48-.93 2.48-.93.49 1.25.18 2.17.09 2.4.58.64.93 1.45.93 2.44 0 3.47-2.11 4.23-4.12 4.46.32.28.61.83.61 1.68v2.49c0 .24.16.52.62.43A9 9 0 0 0 12 3Z"/></svg><span class="account-status-text">Checking…</span></button>
+        <button class="github-account-button" type="button" id="obsidian-account-button" aria-label="Obsidian vault: checking" title="Obsidian vault"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v18H7.5A2.5 2.5 0 0 1 5 18.5v-13Z"/><path d="M5 7h10M9 11h6M9 15h6"/></svg><span class="account-status-text">Checking…</span></button>
       </div>
     </aside>
 
@@ -94,11 +94,11 @@
     <main class="center-panel">
       <!-- Timeline header -->
       <div class="timeline-header" id="timeline-header" hidden>
-        <div class="timeline-header-title" id="timeline-repo">Foxen/fennec · main</div>
+        <div class="timeline-header-title" id="timeline-repo">fennec · main · 1.0.0</div>
         <div class="timeline-header-main">
           <div>
             <h1 id="timeline-title">New task</h1>
-            <div class="timeline-header-subtitle">Chronological local-agent activity and verification for the active repository.</div>
+            <div class="timeline-header-subtitle">A simple record of what changed, what was checked, and what needs your say.</div>
           </div>
           <div class="status-badge" id="timeline-status">
             <span class="dot"></span>
@@ -115,7 +115,7 @@
       <!-- Task queue (only visible when AI is working on previous task) -->
       <div class="task-queue" id="task-queue" hidden>
         <div class="task-queue-header">
-          <span class="task-queue-icon">☰</span>
+          <span class="task-queue-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 6h12M6 12h12M6 18h8"/><circle cx="4" cy="6" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="18" r=".7" fill="currentColor"/></svg></span>
           <span class="task-queue-title">Task queue</span>
           <span class="task-queue-count" id="task-queue-count">0 items</span>
         </div>
@@ -129,19 +129,19 @@
         <div class="attachment-chips" id="attachment-chips" hidden></div>
         <input type="file" id="file-input" multiple hidden
                accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.pdf,.rs,.js,.ts,.tsx,.jsx,.py,.html,.css,.toml,.yaml,.yml,.xml,.sh">
-        <textarea id="composer-input" rows="2" placeholder="Ask Fennec to inspect, edit, test, or explain your code" maxlength="32000"></textarea>
+        <textarea id="composer-input" rows="2" placeholder="What are you trying to get done?" maxlength="32000"></textarea>
         <div class="composer-toolbar">
           <div class="composer-tools">
-            <button class="tool-button" type="button" aria-label="Attach files" id="btn-attach" title="Attach images or documents">📎</button>
+            <button class="tool-button" type="button" aria-label="Attach files" id="btn-attach" title="Attach images or documents"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m8 12 5.5-5.5a3 3 0 0 1 4.24 4.24l-6.36 6.36a4 4 0 0 1-5.66-5.66l6.01-6.01"/></svg></button>
             <div class="permission-mode">
               <button class="permission-trigger perm-ask" id="permission-trigger" type="button" aria-haspopup="true" aria-expanded="false">
-                <span class="permission-trigger-icon" id="permission-trigger-icon">🛡</span>
+                <span class="permission-trigger-icon" id="permission-trigger-icon" aria-hidden="true">•</span>
                 <span class="permission-trigger-label" id="permission-trigger-label">Ask every time</span>
                 <span class="permission-trigger-arrow">▾</span>
               </button>
               <div class="permission-dropdown" id="permission-dropdown" hidden>
                 <button class="permission-option" data-mode="ask" type="button">
-                  <span class="permission-option-icon">🛡</span>
+                  <span class="permission-option-icon" aria-hidden="true">•</span>
                   <div class="permission-option-text">
                     <span class="permission-option-title">Ask every time</span>
                     <span class="permission-option-desc">Always ask before commands, external edits, and internet use</span>
@@ -149,7 +149,7 @@
                   <span class="permission-option-check" data-check="ask">✓</span>
                 </button>
                 <button class="permission-option" data-mode="auto" type="button">
-                  <span class="permission-option-icon">🕐</span>
+                  <span class="permission-option-icon" aria-hidden="true">•</span>
                   <div class="permission-option-text">
                     <span class="permission-option-title">Auto approve</span>
                     <span class="permission-option-desc">Only asks when a potential risk is detected.</span>
@@ -157,7 +157,7 @@
                   <span class="permission-option-check" data-check="auto">✓</span>
                 </button>
                 <button class="permission-option permission-option-danger" data-mode="full" type="button">
-                  <span class="permission-option-icon">⚠</span>
+                  <span class="permission-option-icon" aria-hidden="true">•</span>
                   <div class="permission-option-text">
                     <span class="permission-option-title">Full access</span>
                     <span class="permission-option-desc">Never ask, with full access to your files, terminal, and the internet</span>
@@ -170,7 +170,6 @@
           <div class="composer-actions">
             <div class="model-select">
               <button class="model-trigger" id="model-trigger" type="button" aria-haspopup="true" aria-expanded="false" title="Select model">
-                <span class="model-trigger-icon">⚡</span>
                 <span class="model-trigger-label" id="model-trigger-label">Qwen3.5-MoE</span>
                 <span class="permission-trigger-arrow">▾</span>
               </button>
@@ -178,7 +177,7 @@
                 <!-- Model rows rendered by app.js -->
               </div>
             </div>
-            <button class="tool-button" type="button" aria-label="Dictate" id="btn-dictate" title="Dictate">🎤</button>
+            <button class="tool-button" type="button" aria-label="Dictate" id="btn-dictate" title="Dictate"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="4" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6"/></svg></button>
             <button class="send-button" id="send-button" type="button" aria-label="Send" disabled>
               <span id="send-button-icon">↑</span>
             </button>
@@ -193,7 +192,7 @@
            next to the rest of the run's context, instead of over the app. -->
       <div class="inspector-section file-viewer" id="file-viewer" hidden>
         <div class="inspector-section-header">
-          <span>FILE</span>
+          <span>File</span>
           <button class="icon-button" type="button" aria-label="Close file" id="file-viewer-close">×</button>
         </div>
         <div class="file-viewer-name" id="file-viewer-name"></div>
@@ -205,7 +204,7 @@
       <!-- Active Agents -->
       <div class="inspector-section">
         <div class="inspector-section-header">
-          <span>ACTIVE AGENTS</span>
+          <span>Working now</span>
           <span class="section-count" id="agent-count">0 online</span>
         </div>
         <div id="agent-list">
@@ -216,45 +215,45 @@
       <!-- Workspace Context -->
       <div class="inspector-section">
         <div class="inspector-section-header">
-          <span>WORKSPACE CONTEXT</span>
+          <span>At a glance</span>
         </div>
         <div class="context-item">
-          <span class="context-icon">👥</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3.5 19a4.5 4.5 0 0 1 9 0M14 18a4 4 0 0 1 6.5-3.1"/></svg></span>
           <div class="context-info">
             <div class="context-label">Subagents</div>
             <div class="context-value muted" id="subagents-value">No active delegated agents</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">📡</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
           <div class="context-info">
             <div class="context-label">Processes</div>
             <div class="context-value muted" id="processes-value">Event stream idle</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">⚡</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="m14 6 4 4M5 19l6.5-6.5M13 7a4 4 0 0 0 5 5l-7 7H6v-5l7-7Z"/></svg></span>
           <div class="context-info">
             <div class="context-label">Skills</div>
             <div class="context-value muted" id="skills-value">No tool activity yet</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">📦</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></span>
           <div class="context-info">
             <div class="context-label">Artifacts</div>
             <div class="context-value muted" id="artifact-count">0 task artifacts</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">🌐</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></svg></span>
           <div class="context-info">
-            <div class="context-label">Web Readings</div>
+            <div class="context-label">Web readings</div>
             <div class="context-value muted" id="webreadings-value">No linked readings</div>
           </div>
         </div>
         <div class="context-item">
-          <span class="context-icon">🔗</span>
+          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 6h12M6 12h12M6 18h8"/><circle cx="4" cy="6" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="18" r=".7" fill="currentColor"/></svg></span>
           <div class="context-info">
             <div class="context-label">Sources</div>
             <div class="context-value muted" id="sources-value">No task sources</div>
@@ -265,7 +264,7 @@
       <!-- Environment -->
       <div class="inspector-section">
         <div class="inspector-section-header">
-          <span>ENVIRONMENT</span>
+          <span>Environment</span>
         </div>
         <div class="env-row">
           <span class="env-key">Repository</span>
@@ -300,6 +299,7 @@
         <button class="settings-tab active" data-tab="connection" type="button">Connection</button>
         <button class="settings-tab" data-tab="appearance" type="button">Appearance</button>
         <button class="settings-tab" data-tab="github" type="button">GitHub</button>
+        <button class="settings-tab" data-tab="obsidian" type="button">Obsidian</button>
         <button class="settings-tab" data-tab="behavior" type="button">Behavior</button>
         <button class="settings-tab" data-tab="advanced" type="button">Advanced</button>
       </nav>
@@ -345,6 +345,31 @@
             <div id="github-repository-list" class="github-repository-list">
               <span class="settings-hint">Sign in to GitHub to list repositories.</span>
             </div>
+          </div>
+        </div>
+        <!-- Obsidian tab -->
+        <div class="settings-panel" id="panel-obsidian">
+          <h3>Obsidian</h3>
+          <div class="settings-card">
+            <label>Account and vault</label>
+            <div id="obsidian-account-status" class="github-status">Checking Obsidian vault…</div>
+            <span class="settings-hint">Sign in to Obsidian in the Obsidian app. Fennec writes only to the configured local vault, which Obsidian Sync can synchronize.</span>
+            <div class="button-row github-actions">
+              <button class="primary-button" type="button" id="obsidian-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <label for="obsidian-note-title">Note title</label>
+            <input id="obsidian-note-title" type="text" placeholder="Fennec note" autocomplete="off">
+            <label for="obsidian-note-folder">Folder (optional)</label>
+            <input id="obsidian-note-folder" type="text" placeholder="Fennec" autocomplete="off">
+            <label for="obsidian-note-content">Note content</label>
+            <textarea id="obsidian-note-content" rows="8" placeholder="Write a note to the configured vault…"></textarea>
+            <label class="checkbox-label"><input id="obsidian-note-overwrite" type="checkbox"> Replace an existing note</label>
+            <div class="button-row github-actions">
+              <button class="primary-button" type="button" id="obsidian-write">Write to Obsidian</button>
+            </div>
+            <p id="obsidian-write-status" class="error-text" role="status" hidden></p>
           </div>
         </div>
         <!-- Appearance tab -->

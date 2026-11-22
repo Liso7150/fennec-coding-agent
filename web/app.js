@@ -70,6 +70,33 @@
     attachments: [], // pending composer attachments (not persisted)
   };
 
+  const UI_ICON_PATHS = {
+    settings: '<path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42"/><circle cx="12" cy="12" r="3.5"/>',
+    panel: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M15 4v16"/>',
+    list: '<path d="M6 6h12M6 12h12M6 18h12"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+    search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/>',
+    paperclip: '<path d="m8 12 5.5-5.5a3 3 0 0 1 4.24 4.24l-6.36 6.36a4 4 0 0 1-5.66-5.66l6.01-6.01"/>',
+    mic: '<rect x="9" y="4" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6"/>',
+    github: '<path d="M12 3a9 9 0 0 0-2.84 17.54c.45.08.62-.2.62-.43v-1.52c-2.52.55-3.05-1.06-3.05-1.06-.41-1.05-1-1.33-1-1.33-.82-.56.06-.55.06-.55.91.06 1.39.94 1.39.94.8 1.39 2.1.99 2.61.76.08-.59.31-.99.57-1.22-2.01-.23-4.12-1-4.12-4.46 0-.99.35-1.8.93-2.44-.09-.23-.4-1.15.09-2.4 0 0 .76-.24 2.48.93a8.6 8.6 0 0 1 4.52 0c1.72-1.17 2.48-.93 2.48-.93.49 1.25.18 2.17.09 2.4.58.64.93 1.45.93 2.44 0 3.47-2.11 4.23-4.12 4.46.32.28.61.83.61 1.68v2.49c0 .24.16.52.62.43A9 9 0 0 0 12 3Z"/>',
+    vault: '<path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v18H7.5A2.5 2.5 0 0 1 5 18.5v-13Z"/><path d="M5 7h10M9 11h6M9 15h6"/>',
+    file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m5 17 4-4 3 3 2-2 5 4"/>',
+    download: '<path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14"/>',
+    queue: '<path d="M6 6h12M6 12h12M6 18h8"/><circle cx="4" cy="6" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="18" r=".7" fill="currentColor"/>',
+    workspace: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h4l2 2H18a2 2 0 0 1 2 2v7.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    thought: '<path d="M7 17.5A5.5 5.5 0 1 1 17 14l2 3-3.5-.5A5.5 5.5 0 0 1 7 17.5Z"/>',
+    tool: '<path d="m14 6 4 4M5 19l6.5-6.5M13 7a4 4 0 0 0 5 5l-7 7H6v-5l7-7Z"/>',
+    volume: '<path d="M5 10v4h3l4 3V7l-4 3H5Z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/>',
+    stop: '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
+  };
+
+  function iconSvg(name, className = 'ui-icon') {
+    return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${UI_ICON_PATHS[name] || UI_ICON_PATHS.tool}</svg>`;
+  }
+
   const FALLBACK_MODELS = [
     { id: 'qwen3_5_moe', name: 'Qwen3.5-MoE' },
     { id: 'edge0_145b', name: 'Edge0-145B' },
@@ -82,7 +109,7 @@
   // fennec-core/loop.py STEP_TYPES. A type missing here is dropped by
   // applyCoreStep's open-ended chain rather than stopping the watch, but the list
   // is what tells a reader which steps the timeline is expected to speak for.
-  const STEP_TYPES = ['plan', 'assistant', 'partial', 'tool_start', 'progress', 'tool',
+  const STEP_TYPES = ['plan', 'reasoning', 'assistant', 'partial', 'tool_start', 'progress', 'tool',
     'queue', 'final', 'error', 'cancelled', 'approval_required'];
 
   // The reasoning levels are core's vocabulary (loop.py
@@ -100,15 +127,15 @@
   // Permission modes mirror the native shell (fennec-desktop/src/gui_main.rs set_access_mode).
   const PERM_MODES = {
     ask: {
-      icon: '🛡', label: 'Ask every time', colorClass: 'perm-ask',
+      icon: '•', label: 'Ask every time', colorClass: 'perm-ask',
       flags: { allow_write: false, allow_shell: false, allow_web: false, ask_each: true },
     },
     auto: {
-      icon: '🕐', label: 'Auto approve', colorClass: 'perm-auto',
+      icon: '•', label: 'Auto approve', colorClass: 'perm-auto',
       flags: { allow_write: true, allow_shell: true, allow_web: true, ask_each: false },
     },
     full: {
-      icon: '⚠', label: 'Full access', colorClass: 'perm-full',
+      icon: '•', label: 'Full access', colorClass: 'perm-full',
       flags: { allow_write: true, allow_shell: true, allow_web: true, ask_each: false },
     },
   };
@@ -141,6 +168,27 @@
   const fileInput = $('file-input');
   const toastStack = $('toast-stack');
 
+  function queueEntry(text, owner = 'user') {
+    return { text: String(text || ''), owner: owner === 'ai' ? 'ai' : 'user' };
+  }
+
+  function normalizeQueue(items) {
+    const entries = (Array.isArray(items) ? items : []).map((item) => {
+      if (typeof item === 'string') return queueEntry(item);
+      if (!item || typeof item.text !== 'string' || !item.text.trim()) return null;
+      return queueEntry(item.text, item.owner);
+    }).filter(Boolean);
+    return entries.filter((item) => item.owner === 'ai').concat(entries.filter((item) => item.owner === 'user'));
+  }
+
+  function isAgentQueueItem(item) {
+    return item && item.owner === 'ai';
+  }
+
+  function queueText(item) {
+    return typeof item === 'string' ? item : item.text;
+  }
+
   // ── Persistence ────────────────────────────────────────────────────────────
   function loadState() {
     try {
@@ -150,7 +198,7 @@
         // Only restore real conversations — never empty drafts.
         state.tasks = (parsed.tasks || []).filter((t) => t && Array.isArray(t.msgs) && t.msgs.length > 0);
         state.activeId = parsed.activeId || null;
-        state.queued = Array.isArray(parsed.queued) ? parsed.queued : [];
+        state.queued = normalizeQueue(parsed.queued);
         if (state.activeId !== null && !state.tasks.some((t) => t.id === state.activeId)) {
           state.activeId = null;
         }
@@ -505,49 +553,49 @@
 
   // ── Tool kind → display mapping (events.rs ToolEventKind) ─────────────────
   const TOOL_KINDS = {
-    InspectRepository: { label: 'Inspect repository', icon: '🔍', category: 'source' },
-    ReadFile: { label: 'Read file', icon: '📖', category: 'source' },
-    SearchCode: { label: 'Search code', icon: '🔍', category: 'source' },
-    CreateFile: { label: 'Create file', icon: '📝', category: 'edit' },
-    EditFile: { label: 'Edit file', icon: '📝', category: 'edit' },
-    DeleteFile: { label: 'Delete file', icon: '🗑', category: 'edit' },
-    ReviewDiff: { label: 'Review diff', icon: '👁', category: 'edit' },
-    RunCommand: { label: 'Run command', icon: '⌨', category: 'command' },
-    RunTestSuite: { label: 'Run tests', icon: '🧪', category: 'command' },
-    BuildProject: { label: 'Build project', icon: '🔧', category: 'command' },
-    LintProject: { label: 'Lint project', icon: '🧹', category: 'command' },
-    FormatProject: { label: 'Format project', icon: '🧹', category: 'command' },
-    SearchDocumentation: { label: 'Search documentation', icon: '🌐', category: 'web' },
-    OpenUrl: { label: 'Open URL', icon: '🌐', category: 'web' },
-    AnalyzeImage: { label: 'Analyze image', icon: '🖼', category: 'other' },
-    GenerateArtifact: { label: 'Generate artifact', icon: '📦', category: 'edit' },
-    VerifyImplementation: { label: 'Verify implementation', icon: '✓', category: 'other' },
-    GitFetch: { label: 'Git fetch', icon: '🔀', category: 'command' },
-    GitPull: { label: 'Git pull', icon: '🔀', category: 'command' },
-    GitCommit: { label: 'Git commit', icon: '🔀', category: 'command' },
-    GitPush: { label: 'Git push', icon: '🔀', category: 'command' },
-    PullRequestOperation: { label: 'Pull request', icon: '🔀', category: 'other' },
-    FineTuneModel: { label: 'Fine-tune model', icon: '⚡', category: 'other' },
-    EvaluateFineTunedModel: { label: 'Evaluate model', icon: '⚡', category: 'other' },
+    InspectRepository: { label: 'Inspect repository', icon: 'search', category: 'source' },
+    ReadFile: { label: 'Read file', icon: 'file', category: 'source' },
+    SearchCode: { label: 'Search code', icon: 'search', category: 'source' },
+    CreateFile: { label: 'Create file', icon: 'file', category: 'edit' },
+    EditFile: { label: 'Edit file', icon: 'file', category: 'edit' },
+    DeleteFile: { label: 'Delete file', icon: 'tool', category: 'edit' },
+    ReviewDiff: { label: 'Review diff', icon: 'panel', category: 'edit' },
+    RunCommand: { label: 'Run command', icon: 'tool', category: 'command' },
+    RunTestSuite: { label: 'Run tests', icon: 'tool', category: 'command' },
+    BuildProject: { label: 'Build project', icon: 'tool', category: 'command' },
+    LintProject: { label: 'Lint project', icon: 'tool', category: 'command' },
+    FormatProject: { label: 'Format project', icon: 'tool', category: 'command' },
+    SearchDocumentation: { label: 'Search documentation', icon: 'search', category: 'web' },
+    OpenUrl: { label: 'Open URL', icon: 'search', category: 'web' },
+    AnalyzeImage: { label: 'Analyze image', icon: 'image', category: 'other' },
+    GenerateArtifact: { label: 'Generate artifact', icon: 'file', category: 'edit' },
+    VerifyImplementation: { label: 'Verify implementation', icon: 'check', category: 'other' },
+    GitFetch: { label: 'Git fetch', icon: 'tool', category: 'command' },
+    GitPull: { label: 'Git pull', icon: 'tool', category: 'command' },
+    GitCommit: { label: 'Git commit', icon: 'tool', category: 'command' },
+    GitPush: { label: 'Git push', icon: 'tool', category: 'command' },
+    PullRequestOperation: { label: 'Pull request', icon: 'tool', category: 'other' },
+    FineTuneModel: { label: 'Fine-tune model', icon: 'tool', category: 'other' },
+    EvaluateFineTunedModel: { label: 'Evaluate model', icon: 'tool', category: 'other' },
   };
 
   // The core loop's own registry (tools.py) names calls in snake
   // case; the Rust table above names the same actions in enum form. Both arrive
   // here so a card never falls back to a bare "🔧 write_file".
   const CORE_TOOL_KINDS = {
-    write_file: { label: 'Write file', icon: '📝', category: 'edit' },
-    edit_file: { label: 'Edit file', icon: '📝', category: 'edit' },
-    read_file: { label: 'Read file', icon: '📖', category: 'source' },
-    list_dir: { label: 'Inspect repository', icon: '📁', category: 'source' },
-    grep: { label: 'Search code', icon: '🔍', category: 'source' },
-    semantic_search: { label: 'Semantic search', icon: '🔍', category: 'source' },
-    run_shell: { label: 'Run command', icon: '⌨', category: 'command' },
-    run_python: { label: 'Run python', icon: '🧪', category: 'command' },
-    git_status: { label: 'Repository status', icon: '🔀', category: 'command' },
-    git_diff: { label: 'Review diff', icon: '👁', category: 'edit' },
-    web_task: { label: 'Web research', icon: '🌐', category: 'web' },
-    coworker_task: { label: 'Delegate to coworker', icon: '🤝', category: 'other' },
-    summarise: { label: 'Summarise the run', icon: '✓', category: 'other' },
+    write_file: { label: 'Write file', icon: 'file', category: 'edit' },
+    edit_file: { label: 'Edit file', icon: 'file', category: 'edit' },
+    read_file: { label: 'Read file', icon: 'file', category: 'source' },
+    list_dir: { label: 'Inspect repository', icon: 'workspace', category: 'source' },
+    grep: { label: 'Search code', icon: 'search', category: 'source' },
+    semantic_search: { label: 'Semantic search', icon: 'search', category: 'source' },
+    run_shell: { label: 'Run command', icon: 'tool', category: 'command' },
+    run_python: { label: 'Run python', icon: 'tool', category: 'command' },
+    git_status: { label: 'Repository status', icon: 'tool', category: 'command' },
+    git_diff: { label: 'Review diff', icon: 'panel', category: 'edit' },
+    web_task: { label: 'Web research', icon: 'search', category: 'web' },
+    coworker_task: { label: 'Delegate to coworker', icon: 'workspace', category: 'other' },
+    summarise: { label: 'Summarise the run', icon: 'check', category: 'other' },
   };
 
   // Mirrors fennec-ui/src/inspector.rs. Reading, writing, searching and running
@@ -709,7 +757,7 @@
 
   function toolMeta(kind) {
     return TOOL_KINDS[kind] || CORE_TOOL_KINDS[kind]
-      || { label: kind || 'Action', icon: '🔧', category: 'other' };
+      || { label: kind || 'Action', icon: 'tool', category: 'other' };
   }
 
   function toolContent(te) {
@@ -856,9 +904,6 @@
         ':' + (d.status || '') + (d.decision || '') + (d.note || '') + ':' + (d.chunks || 0) +
         ':' + (d.duration || '') + ':' + (d.toolKind || '') + ':' + (d.stream ? 1 : 0);
     }
-    // The plan strip is task state, not a message, so the checklist the loop
-    // republishes has to be in the key or a finished stage would never tick.
-    key += '#p' + (task.plan || []).map((s) => (s.done ? '✓' : '·') + s.text).join(',');
     // Which blocks and rows are open lives in JS, not in the DOM this rebuild
     // throws away, so it has to be part of the key — otherwise opening a block
     // would compute the same timeline and paint nothing.
@@ -882,7 +927,7 @@
       timelineHeader.hidden = true;
       const empty = document.createElement('div');
       empty.className = 'timeline-empty';
-      empty.innerHTML = '<div class="timeline-empty-icon">🦊</div><div>No active task.</div><div class="muted">Type a prompt below to start a new conversation.</div>';
+      empty.innerHTML = '<div class="timeline-empty-title">What would you like to do?</div><div class="muted">Start with a small, concrete ask. Your work will stay here.</div>';
       timeline.appendChild(empty);
       return;
     }
@@ -912,32 +957,6 @@
     timeline.querySelectorAll('.tool-group-body[data-live]').forEach((b) => {
       b.scrollTop = b.scrollHeight;
     });
-    // The loop's own stage list, last in the timeline because it says what comes
-    // next rather than what happened. A checklist, not a card — and never a
-    // thought row: the thinking the block holds is the model's own reasoning.
-    const plan = task.plan || [];
-    if (plan.length) {
-      const strip = document.createElement('div');
-      strip.className = 'core-plan';
-      const head = document.createElement('div');
-      head.className = 'core-plan-head';
-      head.textContent = 'Plan';
-      strip.appendChild(head);
-      for (const step of plan) {
-        const row = document.createElement('div');
-        row.className = 'core-plan-step' + (step.done ? ' done' : '');
-        const mark = document.createElement('span');
-        mark.className = 'core-plan-mark';
-        mark.textContent = step.done ? '✓' : '→';
-        const text = document.createElement('span');
-        text.className = 'core-plan-text';
-        text.textContent = step.text || '';
-        row.appendChild(mark);
-        row.appendChild(text);
-        strip.appendChild(row);
-      }
-      timeline.appendChild(strip);
-    }
     if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
     else timeline.scrollTop = previousTop;
   }
@@ -1106,7 +1125,7 @@
             <div class="message-footer">
               ${streaming ? '<span class="message-status running">Streaming…</span>' : ''}
               <span class="message-time">${time}</span>
-              <button class="tts-btn" type="button" title="Read aloud" aria-label="Read aloud">🔊</button>
+              <button class="tts-btn" type="button" title="Read aloud" aria-label="Read aloud">${iconSvg('volume')}</button>
             </div>
           </div>`;
         break;
@@ -1323,7 +1342,7 @@
     // The run's own reasoning, as a row of the block it was thought in. It folded
     // to seven words like any other row, and its click prints the whole thought.
     if (m.kind === 'think') {
-      return { icon: '💭', label: thoughtPreview(m.content), status: '', adds: 0, dels: 0, failed: false, msg: m, opens: 'text', kind: null };
+      return { icon: 'thought', label: thoughtPreview(m.content), status: '', adds: 0, dels: 0, failed: false, msg: m, opens: 'text', kind: null };
     }
     if (writeVerb(m)) {
       const path = writtenPath(m);
@@ -1371,7 +1390,7 @@
     box.innerHTML = `
       <div class="tool-group-header" role="button" tabindex="0" aria-expanded="${open}">
         <span class="group-chev">${open ? '▾' : '▸'}</span>
-        <span class="group-icon">⚙</span>
+        <span class="group-icon">${iconSvg('tool')}</span>
         <span class="group-title">${escapeHtml(title)}</span>
         ${failed ? `<span class="group-failed">${failed} failed</span>` : ''}
       </div>`;
@@ -1402,7 +1421,7 @@
       row.setAttribute('role', 'button');
       row.tabIndex = 0;
       row.innerHTML = `
-        <span class="group-row-icon mono">${escapeHtml(r.icon)}</span>
+        <span class="group-row-icon mono">${UI_ICON_PATHS[r.icon] ? iconSvg(r.icon) : escapeHtml(r.icon)}</span>
         <span class="group-row-label mono">${escapeHtml(r.label)}</span>
         ${r.adds ? `<span class="ok mono">+${r.adds}</span>` : ''}
         ${r.dels ? `<span class="err-text mono">−${r.dels}</span>` : ''}
@@ -1445,7 +1464,7 @@
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (speakingBtn) {
       speakingBtn.classList.remove('speaking');
-      speakingBtn.textContent = '🔊';
+      speakingBtn.innerHTML = iconSvg('volume');
       speakingBtn = null;
     }
   }
@@ -1463,7 +1482,7 @@
     utter.onerror = () => { if (speakingBtn === btn) stopSpeaking(); };
     speakingBtn = btn;
     btn.classList.add('speaking');
-    btn.textContent = '⏹';
+    btn.innerHTML = iconSvg('stop');
     window.speechSynthesis.speak(utter);
   }
 
@@ -1673,30 +1692,58 @@
   // ── Render: task queue (shown whenever prompts wait, working or not) ──────
   function renderQueue() {
     taskQueueList.innerHTML = '';
-    // A queue item outlives the run that made it. When a run errors or gets
-    // cancelled nothing drains, so the strip has to stay up — otherwise the
-    // waiting prompts, including the ones the agent proposed, are invisible and
-    // unreachable while still on the list.
     const show = state.queued.length > 0;
     taskQueue.hidden = !show;
     if (!show) return;
 
     for (let i = 0; i < state.queued.length; i++) {
+      const item = state.queued[i];
+      const agentOwned = isAgentQueueItem(item);
       const li = document.createElement('li');
-      li.className = 'task-queue-item';
+      li.className = 'task-queue-item' + (agentOwned ? ' queue-agent-item' : '');
+      const controls = agentOwned
+        ? '<span class="queue-locked" title="Added by Fennec and cannot be changed">AI · locked</span>'
+        : `<span class="queue-controls">
+            <button class="queue-action" type="button" data-action="up" data-idx="${i}" title="Move task up" aria-label="Move task up">↑</button>
+            <button class="queue-action" type="button" data-action="down" data-idx="${i}" title="Move task down" aria-label="Move task down">↓</button>
+            <button class="queue-action" type="button" data-action="edit" data-idx="${i}" title="Edit task" aria-label="Edit task">✎</button>
+            <button class="queue-remove" type="button" data-action="remove" data-idx="${i}" title="Remove from queue" aria-label="Remove from queue">✕</button>
+          </span>`;
       li.innerHTML = `
         <span class="queue-dot"></span>
-        <span class="queue-title">${escapeHtml(state.queued[i])}</span>
-        <span class="queue-status">${i === 0 ? 'Next' : 'Queued'}</span>
-        <button class="queue-remove" type="button" data-idx="${i}" title="Remove from queue" aria-label="Remove from queue">✕</button>`;
+        <span class="queue-title" title="${escapeHtml(queueText(item))}">${escapeHtml(queueText(item))}</span>
+        <span class="queue-status">${agentOwned ? 'AI' : (i === 0 ? 'Next' : 'Queued')}</span>
+        ${controls}`;
       taskQueueList.appendChild(li);
     }
     taskQueueCount.textContent = state.queued.length + ' item' + (state.queued.length !== 1 ? 's' : '');
 
-    taskQueueList.querySelectorAll('.queue-remove').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.dataset.idx, 10);
-        state.queued.splice(idx, 1);
+    taskQueueList.querySelectorAll('[data-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const idx = Number(button.dataset.idx);
+        const action = button.dataset.action;
+        const item = state.queued[idx];
+        if (!item || isAgentQueueItem(item)) return;
+        if (action === 'edit') {
+          const text = window.prompt('Edit queued task', queueText(item));
+          if (text && text.trim()) item.text = text.trim();
+        } else if (action === 'remove') {
+          state.queued.splice(idx, 1);
+        } else if (action === 'up' || action === 'down') {
+          const step = action === 'up' ? -1 : 1;
+          const target = state.queued.findIndex((candidate, candidateIndex) => {
+            if (candidateIndex <= idx || isAgentQueueItem(candidate)) return false;
+            return step > 0;
+          });
+          let swap = target;
+          if (step < 0) {
+            swap = -1;
+            for (let candidateIndex = idx - 1; candidateIndex >= 0; candidateIndex--) {
+              if (!isAgentQueueItem(state.queued[candidateIndex])) { swap = candidateIndex; break; }
+            }
+          }
+          if (swap >= 0) [state.queued[idx], state.queued[swap]] = [state.queued[swap], state.queued[idx]];
+        }
         saveState();
         renderQueue();
       });
@@ -1708,7 +1755,7 @@
       const next = state.queued.shift();
       saveState();
       renderQueue();
-      sendMessage(next);
+      sendMessage(queueText(next));
     }
   }
 
@@ -1759,7 +1806,7 @@
       const item = document.createElement('div');
       item.className = 'agent-item';
       item.innerHTML = `
-        <span class="agent-icon">🦊</span>
+        <span class="agent-icon" aria-hidden="true">F</span>
         <div class="agent-info">
           <div class="agent-name">Fennec</div>
           <div class="agent-task">${escapeHtml(task.title)}</div>
@@ -1769,7 +1816,7 @@
     } else {
       const note = document.createElement('div');
       note.className = 'agent-note muted';
-      note.textContent = 'No agents running.';
+      note.textContent = 'Nothing is running right now.';
       agentList.appendChild(note);
     }
 
@@ -1779,14 +1826,14 @@
         stats.delegations.length + ' delegation' + (stats.delegations.length !== 1 ? 's' : '') +
         ' · ' + stats.delegations.slice(-2).join(', '), true);
     } else {
-      setContextValue('subagents-value', 'No active delegated agents', false);
+      setContextValue('subagents-value', 'No one else is helping yet', false);
     }
 
     // Processes — only the commands whose process is still alive
     setContextValue('processes-value',
       stats.commands > 0
         ? stats.commands + ' command' + (stats.commands !== 1 ? 's' : '') + ' running in the background'
-        : 'No commands running in the background',
+        : 'Nothing running in the background',
       stats.commands > 0);
 
     // Skills — what the run reached for beyond the tools it always has
@@ -1796,15 +1843,15 @@
         .map((k) => toolMeta(k).label);
       setContextValue('skills-value', kinds.length + ' skill' + (kinds.length !== 1 ? 's' : '') + ' · ' + top.join(', '), true);
     } else {
-      setContextValue('skills-value', 'Nothing beyond the built-in tools', false);
+      setContextValue('skills-value', 'Nothing used yet', false);
     }
 
     // Artifacts — produced files / edits
     const artifactEl = $('artifact-count');
     if (artifactEl) {
       const files = stats.editedFiles.length;
-      artifactEl.textContent = stats.artifacts + ' task artifact' + (stats.artifacts !== 1 ? 's' : '') +
-        (files > 0 ? ' · ' + files + ' file' + (files !== 1 ? 's' : '') + ' edited' : '');
+      artifactEl.textContent = stats.artifacts + ' artifact' + (stats.artifacts !== 1 ? 's' : '') +
+        (files > 0 ? ' · ' + files + ' file' + (files !== 1 ? 's' : '') + ' changed' : '');
       artifactEl.className = 'context-value ' + (stats.artifacts > 0 ? 'ok' : 'muted');
     }
 
@@ -1814,7 +1861,7 @@
         stats.webReadings.length + ' reading' + (stats.webReadings.length !== 1 ? 's' : '') +
         ' · ' + stats.webReadings[stats.webReadings.length - 1], true);
     } else {
-      setContextValue('webreadings-value', 'No linked readings', false);
+      setContextValue('webreadings-value', 'No readings yet', false);
     }
 
     // Sources — files read / inspected / searched
@@ -1823,7 +1870,7 @@
         stats.sources.length + ' source' + (stats.sources.length !== 1 ? 's' : '') +
         ' · ' + stats.sources[stats.sources.length - 1], true);
     } else {
-      setContextValue('sources-value', 'No task sources', false);
+      setContextValue('sources-value', 'No files opened yet', false);
     }
 
     // Attention badge: tasks blocked on the user (pending approvals) or failed,
@@ -1986,7 +2033,7 @@
       const chip = document.createElement('span');
       chip.className = 'attach-chip';
       chip.innerHTML = `
-        <span class="attach-chip-icon">${att.isImage ? '🖼' : '📄'}</span>
+        <span class="attach-chip-icon">${iconSvg(att.isImage ? 'image' : 'file')}</span>
         <span class="attach-chip-name">${escapeHtml(att.name)}</span>
         <span class="attach-chip-size">${escapeHtml(formatFileSize(att.size))}</span>
         <button class="attach-chip-remove" type="button" data-idx="${idx}" title="Remove attachment" aria-label="Remove attachment">×</button>`;
@@ -2187,6 +2234,24 @@
         && x.meta.coreStream && x.meta.gen === task.runGen);
       if (live || !looksLikeCall(task.streamBuf, false)) coreStreamMsg(task).content = task.streamBuf;
       if (thinkId) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+    } else if (kind === 'reasoning') {
+      const text = s.text || '';
+      if (!text) return;
+      let thought = thinkId != null ? task.msgs.find((x) => x.id === thinkId) : null;
+      if (!thought) {
+        thought = task.msgs.slice().reverse().find((x) => x.kind === 'think' && x.meta && x.meta.stream);
+      }
+      if (!thought) {
+        thought = pushMsg(task, {
+          author: 'Fennec', content: '', kind: 'think', collapsed: true,
+          meta: { stream: true, chunks: 0 },
+        });
+      }
+      if (thought.content === 'Connecting to engine…') thought.content = '';
+      thought.content += text;
+      thought.meta = thought.meta || {};
+      thought.meta.stream = true;
+      thought.meta.chunks = (thought.meta.chunks || 0) + 1;
     } else if (kind === 'assistant' || kind === 'final') {
       // The model's own reasoning rides on the assistant step, and it is what the
       // Thoughts block is for. The placeholder that said "Connecting to engine…"
@@ -2220,7 +2285,12 @@
           }
         }
       }
-      if (thinkId && !reasoning) task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+      if (thinkId && !reasoning) {
+        const placeholder = task.msgs.find((x) => x.id === thinkId);
+        if (placeholder && (!placeholder.content || placeholder.content === 'Connecting to engine…')) {
+          task.msgs = task.msgs.filter((x) => x.id !== thinkId);
+        }
+      }
       // The loop publishes each call spelling as its own `assistant` step, and
       // a turn that does not land a call spells the same blob again. As an
       // "answer" that is the same object over and over, and the call's own row
@@ -2316,9 +2386,16 @@
       // same list the user's waiting prompts use, so they drain, show and can be
       // removed exactly the same way. It arrives before the step that ends the
       // run, so the first one is already waiting when the queue drains.
+      const incoming = [];
       for (const text of s.items || []) {
-        const prompt = String(text || '');
-        if (prompt && !state.queued.includes(prompt)) state.queued.push(prompt);
+        const prompt = String(text || '').trim();
+        if (prompt && !state.queued.some((item) => queueText(item) === prompt)) {
+          incoming.push(queueEntry(prompt, 'ai'));
+        }
+      }
+      if (incoming.length) {
+        const firstUser = state.queued.findIndex((item) => !isAgentQueueItem(item));
+        state.queued.splice(firstUser === -1 ? state.queued.length : firstUser, 0, ...incoming);
       }
       saveState();
       renderQueue();
@@ -2392,7 +2469,8 @@
 
     // If AI is working, queue the prompt (strip shows above composer).
     if (isWorking()) {
-      state.queued.push(prompt);
+      state.queued.push(queueEntry(prompt));
+      state.queued = normalizeQueue(state.queued);
       saveState();
       renderQueue();
       updateSendButton();
@@ -2431,14 +2509,14 @@
     task.endNoted = false;
     task.startedAt = Date.now();
 
-    pushMsg(task, { author: 'Foxen', content: text || '(attachments)', kind: 'user', collapsed: false });
+    pushMsg(task, { author: 'Fennec', content: text || '(attachments)', kind: 'user', collapsed: false });
 
     for (const att of attachments) {
       // The card keeps what the picker read, because it is the only copy the
       // page can open: a browser hands over a name, a size and the bytes, and
       // never the file's location, so there is no path for the backend to read.
       pushMsg(task, {
-        author: 'Foxen', content: 'Attached: ' + att.name, kind: 'attach', collapsed: false,
+        author: 'Fennec', content: 'Attached: ' + att.name, kind: 'attach', collapsed: false,
         meta: {
           title: att.name,
           size: formatFileSize(att.size),
@@ -2483,13 +2561,17 @@
     } catch (e) {
       debugLog('send failed', e);
       task.msgs = task.msgs.filter((m) => m.id !== think.id);
+      const detail = e && e.message ? e.message : 'network error';
+      const reachable = /^HTTP \d+$/.test(detail);
       pushMsg(task, {
         author: 'Fennec',
-        content: 'Backend offline — start fennec-agent on :8787. (' + (e && e.message ? e.message : 'network error') + ')',
+        content: reachable
+          ? 'Fennec engine unavailable — the core is online but the inference engine is not ready. (' + detail + ')'
+          : 'Backend offline — start fennec-agent on :8787. (' + detail + ')',
         kind: 'result', collapsed: false,
       });
       task.status = 'Failed';
-      state.backendConnected = false;
+      state.backendConnected = reachable;
       saveState();
       renderAll();
     }
@@ -2953,7 +3035,7 @@
         }
         break;
       case 'coding':
-        composerInput.placeholder = 'Ask Fennec to inspect, edit, test, or explain your code';
+        composerInput.placeholder = 'What are you trying to get done?';
         composerInput.focus();
         break;
     }
@@ -2964,7 +3046,12 @@
     rightPanel.classList.toggle('collapsed', !state.inspectorOpen);
     appLayout.classList.toggle('inspector-closed', !state.inspectorOpen);
     const t = $('inspector-toggle');
-    if (t) t.setAttribute('aria-pressed', String(state.inspectorOpen));
+    if (t) {
+      t.setAttribute('aria-pressed', String(state.inspectorOpen));
+      const label = state.inspectorOpen ? 'Hide context panel' : 'Show context panel';
+      t.setAttribute('aria-label', label);
+      t.setAttribute('title', label);
+    }
   }
 
   function toggleInspector() {
@@ -3057,13 +3144,9 @@
     const dl = document.createElement('button');
     dl.type = 'button';
     dl.className = 'model-option model-download';
-    dl.innerHTML = '<span class="model-download-icon">⬇</span><span class="model-option-name muted">Download new model…</span>';
-    dl.addEventListener('click', (e) => {
-      e.stopPropagation();
-      dd.hidden = true;
-      $('model-trigger').setAttribute('aria-expanded', 'false');
-      toast('Model download coming soon.', 'info');
-    });
+    dl.disabled = true;
+    dl.title = 'Model downloads are not available yet';
+    dl.innerHTML = iconSvg('download', 'model-download-icon') + '<span class="model-option-name muted">Download new model…</span>';
     dd.appendChild(dl);
     const sep2 = document.createElement('div');
     sep2.className = 'model-dropdown-sep';
@@ -3123,7 +3206,7 @@
   let activeWorkspaceId = localStorage.getItem('fennec-active-workspace') || null;
 
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
-    workspaces = [{ id: 'default', name: 'Default', icon: '📁' }];
+    workspaces = [{ id: 'default', name: 'Default', icon: 'workspace' }];
     activeWorkspaceId = 'default';
   }
   if (!workspaces.some((w) => w.id === activeWorkspaceId)) activeWorkspaceId = workspaces[0].id;
@@ -3260,9 +3343,10 @@
       const li = document.createElement('li');
       li.className = 'workspace-item' + (ws.id === activeWorkspaceId ? ' active' : '');
       const folders = Array.isArray(ws.source_folders) ? ws.source_folders : [];
+      const workspaceIcon = UI_ICON_PATHS[ws.icon] ? ws.icon : 'workspace';
       li.innerHTML = `
         <div class="workspace-row">
-          <span class="workspace-icon" style="${ws.color ? 'background:' + escapeHtml(ws.color) : ''}">${escapeHtml(ws.icon || '📁')}</span>
+          <span class="workspace-icon" style="${ws.color ? 'background:' + escapeHtml(ws.color) : ''}">${iconSvg(workspaceIcon)}</span>
           <span class="workspace-label">${escapeHtml(ws.name)}</span>
           <button class="workspace-new-task" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Add task to workspace">+</button>
           <button class="workspace-delete" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Delete workspace">×</button>
@@ -3296,7 +3380,7 @@
       li.className = 'workspace-item unfiled';
       li.innerHTML = `
         <div class="workspace-row">
-          <span class="workspace-icon">🗂</span>
+          <span class="workspace-icon">${iconSvg('workspace')}</span>
           <span class="workspace-label">Unfiled</span>
         </div>`;
       const ul = document.createElement('ul');
@@ -3305,7 +3389,7 @@
       if (unfiled.length === 0) {
         const empty = document.createElement('li');
         empty.className = 'task-empty';
-        empty.textContent = q ? 'No tasks match the filter.' : 'No tasks yet. Type a prompt to start.';
+        empty.textContent = q ? 'No tasks match the filter.' : 'No tasks yet. Start with a prompt.';
         ul.appendChild(empty);
       }
       li.appendChild(ul);
@@ -3319,7 +3403,7 @@
       li.className = 'workspace-item unfiled';
       li.innerHTML = `
         <div class="workspace-row">
-          <span class="workspace-icon">✅</span>
+          <span class="workspace-icon">${iconSvg('check')}</span>
           <span class="workspace-label">Approved commands</span>
         </div>`;
       const ul = document.createElement('ul');
@@ -3400,8 +3484,8 @@
 
   // ── Workspace creation dialog (parity with the native gpui dialog) ─────────
   const WS_ICONS = [
-    '📁', '💻', '🔬', '🧪', '🎨', '🤖', '⚙️', '🔧', '📦', '🚀',
-    '🌐', '📚', '🗂', '📝', '🧭', '🛠', '📡', '🔥', '🧠', '🎯',
+    'workspace', 'file', 'search', 'image', 'panel', 'tool', 'settings', 'queue', 'check', 'download',
+    'vault', 'thought', 'list', 'plus', 'clock', 'paperclip', 'mic', 'github', 'image', 'workspace',
   ];
   const WS_COLORS = [
     { name: 'orange', css: '#d97706' }, { name: 'green', css: '#22c55e' },
@@ -3475,7 +3559,7 @@
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'ws-browser-dir';
-      b.textContent = '📁 ' + d.name;
+      b.innerHTML = iconSvg('workspace') + '<span>' + escapeHtml(d.name) + '</span>';
       b.addEventListener('click', () => browseFolders(d.rel));
       li.appendChild(b);
       list.appendChild(li);
@@ -3530,8 +3614,8 @@
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'ws-icon-btn' + (i === wsDraft.icon ? ' selected' : '');
-      b.textContent = icon;
-      b.setAttribute('aria-label', 'Icon ' + (i + 1));
+      b.innerHTML = iconSvg(icon);
+      b.setAttribute('aria-label', 'Workspace icon ' + (i + 1));
       b.addEventListener('click', () => { wsDraft.icon = i; renderWsGrids(); });
       ig.appendChild(b);
     });
@@ -3615,7 +3699,7 @@
       for (const r of repos) {
         if (!r || !r.id) continue;
         if (!workspaces.some((w) => w.repoId === r.id)) {
-          workspaces.push({ id: 'repo-' + r.id, name: r.name || r.id, icon: '📁', repoId: r.id });
+          workspaces.push({ id: 'repo-' + r.id, name: r.name || r.id, icon: 'workspace', repoId: r.id });
           changed = true;
         }
       }
@@ -3623,11 +3707,23 @@
     } catch (_) { /* backend offline — local workspaces only */ }
   }
 
+  function setGithubAccountButton(text, state) {
+    const button = $('github-account-button');
+    if (!button) return;
+    const status = String(text).replace(/^GitHub\s*·\s*/, '');
+    button.innerHTML = iconSvg('github') + `<span class="account-status-text">${escapeHtml(status)}</span>`;
+    button.setAttribute('aria-label', 'GitHub account: ' + status);
+    button.title = 'GitHub account: ' + status;
+    button.classList.toggle('connected', state === 'connected');
+    button.classList.toggle('error', state === 'error');
+  }
+
   async function refreshGithub() {
     const accountEl = $('github-account-status');
     const listEl = $('github-repository-list');
     if (!accountEl || !listEl) return;
     accountEl.textContent = 'Checking GitHub authentication…';
+    setGithubAccountButton('GitHub · Checking…', 'checking');
     listEl.replaceChildren();
     const loading = document.createElement('span');
     loading.className = 'settings-hint';
@@ -3642,6 +3738,7 @@
       const repositories = repositoriesResponse.ok ? await repositoriesResponse.json() : null;
       if (!account || !account.authenticated) {
         accountEl.textContent = (account && account.error) || 'GitHub is not authenticated.';
+        setGithubAccountButton('GitHub · Sign in', 'error');
         listEl.replaceChildren();
         const hint = document.createElement('span');
         hint.className = 'settings-hint';
@@ -3653,6 +3750,7 @@
       accountEl.textContent = profile.display_name
         ? profile.display_name + ' (@' + profile.login + ')'
         : '@' + profile.login;
+      setGithubAccountButton('GitHub · @' + (profile.login || 'connected'), 'connected');
       listEl.replaceChildren();
       for (const repository of (repositories && repositories.repositories) || []) {
         const row = document.createElement('a');
@@ -3671,11 +3769,79 @@
       }
     } catch (_) {
       accountEl.textContent = 'Could not reach the coding-agent backend.';
+      setGithubAccountButton('GitHub · unavailable', 'error');
       listEl.replaceChildren();
       const hint = document.createElement('span');
       hint.className = 'settings-hint';
       hint.textContent = 'Check the backend connection, then refresh.';
       listEl.appendChild(hint);
+    }
+  }
+
+  function setObsidianAccountButton(text, state) {
+    const button = $('obsidian-account-button');
+    if (!button) return;
+    const status = String(text).replace(/^Obsidian\s*·\s*/, '');
+    button.innerHTML = iconSvg('vault') + `<span class="account-status-text">${escapeHtml(status)}</span>`;
+    button.setAttribute('aria-label', 'Obsidian vault: ' + status);
+    button.title = 'Obsidian vault: ' + status;
+    button.classList.toggle('connected', state === 'connected');
+    button.classList.toggle('error', state === 'error');
+  }
+
+  async function refreshObsidian() {
+    const statusEl = $('obsidian-account-status');
+    if (!statusEl) return;
+    statusEl.textContent = 'Checking Obsidian vault…';
+    setObsidianAccountButton('Obsidian · Checking…', 'checking');
+    try {
+      const response = await apiFetch('/api/obsidian/status');
+      const status = response.ok ? await response.json() : null;
+      if (!status || !status.configured) {
+        statusEl.textContent = (status && status.message) || 'Obsidian vault is not configured.';
+        setObsidianAccountButton('Obsidian · Configure', 'error');
+        return;
+      }
+      statusEl.textContent = 'Vault ready: ' + (status.vault || 'configured');
+      setObsidianAccountButton('Obsidian · Ready', 'connected');
+    } catch (_) {
+      statusEl.textContent = 'Could not reach the coding-agent backend.';
+      setObsidianAccountButton('Obsidian · unavailable', 'error');
+    }
+  }
+
+  async function writeObsidianNote() {
+    const statusEl = $('obsidian-write-status');
+    const title = $('obsidian-note-title').value.trim();
+    const folder = $('obsidian-note-folder').value.trim();
+    const content = $('obsidian-note-content').value;
+    if (!title || !content.trim()) {
+      statusEl.hidden = false;
+      statusEl.textContent = 'Enter a note title and content.';
+      return;
+    }
+    statusEl.hidden = false;
+    statusEl.className = 'settings-hint';
+    statusEl.textContent = 'Writing note…';
+    try {
+      const response = await apiFetch('/api/obsidian/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          folder: folder || null,
+          content,
+          overwrite: $('obsidian-note-overwrite').checked,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Obsidian write failed');
+      statusEl.className = 'settings-hint';
+      statusEl.textContent = 'Wrote ' + result.path;
+      refreshObsidian();
+    } catch (error) {
+      statusEl.className = 'error-text';
+      statusEl.textContent = error.message || 'Obsidian write failed.';
     }
   }
 
@@ -3708,6 +3874,22 @@
     const settingsDialog = $('settings-dialog');
     if (!settingsDialog) return;
 
+    const openGithubSettings = () => {
+      const tab = settingsDialog.querySelector('.settings-tab[data-tab="github"]');
+      if (tab) tab.click();
+      refreshGithub();
+      if (!settingsDialog.open) settingsDialog.showModal();
+    };
+    const githubAccountButton = $('github-account-button');
+    if (githubAccountButton) githubAccountButton.addEventListener('click', openGithubSettings);
+    const obsidianAccountButton = $('obsidian-account-button');
+    if (obsidianAccountButton) obsidianAccountButton.addEventListener('click', () => {
+      const tab = settingsDialog.querySelector('.settings-tab[data-tab="obsidian"]');
+      if (tab) tab.click();
+      refreshObsidian();
+      if (!settingsDialog.open) settingsDialog.showModal();
+    });
+
     $('settings-button').addEventListener('click', () => {
       $('server-url').value = apiBase;
       $('engine-url').value = readSetting('fennec-engine-url', '');
@@ -3718,10 +3900,15 @@
       $('debug-mode').checked = settings.debug;
       $('experimental').checked = settings.experimental;
       refreshGithub();
+      refreshObsidian();
       settingsDialog.showModal();
     });
     $('settings-close').addEventListener('click', () => settingsDialog.close());
     $('github-refresh').addEventListener('click', refreshGithub);
+    $('obsidian-refresh').addEventListener('click', refreshObsidian);
+    $('obsidian-write').addEventListener('click', writeObsidianNote);
+    refreshGithub();
+    refreshObsidian();
     settingsDialog.addEventListener('click', (e) => {
       if (e.target === settingsDialog) settingsDialog.close();
     });
@@ -3885,7 +4072,7 @@
     }
     const chunks = [];
     const rec = new MediaRecorder(stream);
-    const stop = () => { stream.getTracks().forEach((t) => t.stop()); recorder = null; btn.textContent = '🎤'; };
+    const stop = () => { stream.getTracks().forEach((t) => t.stop()); recorder = null; btn.innerHTML = iconSvg('mic'); };
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onerror = (e) => {
       stop();
@@ -3899,7 +4086,7 @@
       // A cold sidecar is started and loaded inside this one request, so the
       // glyph has to say "listening to you took, now transcribing" or the
       // button looks dead for the seconds the model takes.
-      btn.textContent = '⋯';
+      btn.innerHTML = iconSvg('clock');
       try {
         const res = await apiFetch('/api/stt', {
           method: 'POST', headers: { 'Content-Type': type }, body: blob,
@@ -3915,10 +4102,10 @@
       } catch (e) {
         toast('Speech recognition failed: ' + e.message, 'warn');
       }
-      btn.textContent = '🎤';
+      btn.innerHTML = iconSvg('mic');
     };
     recorder = rec;
-    btn.textContent = '⏹';
+    btn.innerHTML = iconSvg('stop');
     rec.start();
   });
 

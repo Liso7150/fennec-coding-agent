@@ -77,9 +77,12 @@ cargo build --release --offline
 ./target/release/fennec-agent
 ```
 
-The backend starts on `127.0.0.1:8787` by default.
+The backend starts on `127.0.0.1:8787` by default. Set `FENNEC_AGENT_ADDR` to bind the Rust/Axum server to a specific loopback address when another local service already owns the default port.
 
 ## API Endpoints
+
+### Backend capabilities
+- `GET /api/capabilities` — identify the Rust/Axum backend and supported protocol features
 
 ### Tasks
 - `GET /api/tasks` — list all tasks

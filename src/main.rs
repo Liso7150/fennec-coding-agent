@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::convert::Infallible;
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
-use tower_http::cors::{CorsLayer, Any};
 use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
@@ -25,6 +24,7 @@ mod repository;
 pub mod events;
 mod updater;
 mod github;
+mod obsidian;
 mod ag_ui;
 
 use task::{Task, TaskStatus, TaskId};
@@ -91,14 +91,10 @@ async fn main() {
 
     let state = AppState::new();
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
+        .route("/api/capabilities", get(capabilities))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/:id", get(get_task).delete(delete_task))
         .route("/api/tasks/:id/start", post(start_task))
@@ -111,20 +107,28 @@ async fn main() {
         .route("/api/repositories/:id/status", get(repository_status))
         .route("/api/github/account", get(github_account))
         .route("/api/github/repositories", get(github_repositories))
+        .route("/api/obsidian/status", get(obsidian_status))
+        .route("/api/obsidian/notes", post(obsidian_write_note))
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
         .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
         .fallback_service(ServeDir::new(web_dir()).fallback(get(serve_index)))
         .layer(middleware::from_fn(revalidate_assets))
-        .layer(cors)
+        .layer(middleware::from_fn(require_client_header))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    // The shared agent loop (fennec-core) may already own 8787; fall back to
-    // 8788 so the coding-agent web UI can still serve and open in a browser.
-    let listener = match tokio::net::TcpListener::bind("127.0.0.1:8787").await {
-        Ok(l) => l,
-        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:8788").await.unwrap(),
+    let listener = if let Ok(bind_addr) = std::env::var("FENNEC_AGENT_ADDR") {
+        tokio::net::TcpListener::bind(&bind_addr).await.unwrap_or_else(|error| {
+            panic!("failed to bind FENNEC_AGENT_ADDR={bind_addr}: {error}")
+        })
+    } else {
+        // The shared agent loop (fennec-core) may already own 8787; fall back to
+        // 8788 so the coding-agent web UI can still serve and open in a browser.
+        match tokio::net::TcpListener::bind("127.0.0.1:8787").await {
+            Ok(l) => l,
+            Err(_) => tokio::net::TcpListener::bind("127.0.0.1:8788").await.unwrap(),
+        }
     };
     let addr = listener.local_addr().unwrap();
     tracing::info!("Fennec coding agent backend listening on {}", addr);
@@ -206,9 +210,19 @@ async fn revalidate_assets(req: Request, next: middleware::Next) -> Response {
     res
 }
 
+async fn require_client_header(req: Request, next: middleware::Next) -> Response {
+    if req.uri().path().starts_with("/api/")
+        && req.headers().get("X-Fennec-Client") != Some(&HeaderValue::from_static("1"))
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(req).await
+}
+
 async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
+        backend: "rust-axum",
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: Utc::now(),
     })
@@ -217,8 +231,39 @@ async fn health_check() -> Json<HealthResponse> {
 #[derive(Serialize)]
 struct HealthResponse {
     status: String,
+    backend: &'static str,
     version: String,
     timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CapabilitiesResponse {
+    backend: &'static str,
+    implementation: &'static str,
+    protocol_version: u32,
+    version: &'static str,
+    features: &'static [&'static str],
+}
+
+async fn capabilities() -> Json<CapabilitiesResponse> {
+    Json(CapabilitiesResponse {
+        backend: "fennec-coding-agent",
+        implementation: "rust-axum",
+        protocol_version: 1,
+        version: env!("CARGO_PKG_VERSION"),
+        features: &[
+            "tasks",
+            "agents",
+            "repositories",
+            "events-sse",
+            "events-websocket",
+            "copilotkit-ag-ui",
+            "native-nod-stdio",
+            "native-antigravity",
+            "obsidian-local-vault-write",
+            "static-web-assets",
+        ],
+    })
 }
 
 async fn list_tasks(State(state): State<AppState>) -> Json<Vec<Task>> {
@@ -550,6 +595,28 @@ async fn github_repositories() -> Json<github::GithubRepositoryStatus> {
     Json(github::repository_status().await)
 }
 
+async fn obsidian_status() -> Json<obsidian::ObsidianStatus> {
+    Json(obsidian::status())
+}
+
+async fn obsidian_write_note(
+    Json(request): Json<obsidian::WriteNoteRequest>,
+) -> impl IntoResponse {
+    match tokio::task::spawn_blocking(|| obsidian::write_note(request)).await {
+        Ok(Ok(note)) => (StatusCode::CREATED, Json(note)).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": error })),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "ok": false, "error": "Obsidian write task failed" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn events_sse(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.event_tx.subscribe();
     
@@ -612,4 +679,20 @@ struct DelegateRequest {
 struct RegisterRepositoryRequest {
     name: String,
     local_path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities;
+
+    #[tokio::test]
+    async fn capabilities_identify_the_rust_backend_and_transport_features() {
+        let response = capabilities().await.0;
+        assert_eq!(response.backend, "fennec-coding-agent");
+        assert_eq!(response.implementation, "rust-axum");
+        assert_eq!(response.protocol_version, 1);
+        assert!(response.features.contains(&"events-sse"));
+        assert!(response.features.contains(&"events-websocket"));
+        assert!(response.features.contains(&"static-web-assets"));
+    }
 }

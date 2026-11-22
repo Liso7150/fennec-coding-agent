@@ -276,7 +276,7 @@ test('the outlet rows read as the native client reads them', (t) => {
   // stays off a line anchor: two fields in one struct literal can split across
   // lines on a reformat, and the test is about the set of outlets, not the layout.
   const labels = [...client.matchAll(/id:\s*"(\w+)",\s*label:\s*"(\w+)"/g)].map(m => [m[1], m[2]]);
-  assert.deepEqual(labels, [['fennec', 'Fennec'], ['openbot', 'OpenBot']],
+  assert.deepEqual(labels.sort(), [['fennec', 'Fennec'], ['openbot', 'OpenBot'], ['antigravity', 'Antigravity']].sort(),
     'the native client names a different set of outlets');
   const block = slice(APP, 'const OUTLETS = [', '\n  ];');
   for (const [id, label] of labels) {
@@ -336,4 +336,19 @@ test('an installed shell cannot be shadowed by the old caching worker', () => {
   for (const [name, source] of [['index.html', HTML], ['app.js', APP]]) {
     assert.doesNotMatch(source, /serviceWorker/, `${name} registers a service worker again`);
   }
+});
+
+test('the queue keeps two compact rows visible and protects agent work', () => {
+  const css = read('styles.css');
+  const list = css.slice(css.indexOf('.task-queue-list'), css.indexOf('.task-queue-item'));
+  assert.match(list, /max-height:\s*58px/);
+  assert.match(list, /overflow-y:\s*auto/);
+  assert.doesNotMatch(css.slice(css.indexOf('.task-queue {'), css.indexOf('.task-queue-header')), /overflow-y/);
+
+  const render = slice(APP, 'function renderQueue()', '\n  }\n\n  function drainQueue');
+  assert.match(render, /AI · locked/);
+  assert.match(render, /data-action="edit"/);
+  assert.match(render, /data-action="remove"/);
+  assert.match(render, /isAgentQueueItem\(item\)\) return/);
+  assert.match(APP, /return entries\.filter\(\(item\) => item\.owner === 'ai'\)\.concat/);
 });

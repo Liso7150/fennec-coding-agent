@@ -96,6 +96,28 @@ const PROGRESS = {
   text: 'Deciding step 3 of 12', step: 3, of: 12, i: 7, t: 41.2,
 };
 
+test('reasoning steps fill the collapsed thought row and stay uncounted', () => {
+  const { fn, makeTask } = harness();
+  const task = makeTask();
+  task.msgs.push({ id: 'thought', kind: 'think', content: 'Connecting to engine…',
+    meta: { stream: true, chunks: 0 } });
+
+  fn(task, { type: 'reasoning', text: 'Inspecting the workspace. ' }, 'thought');
+  fn(task, { type: 'reasoning', text: 'I will read the relevant file.' }, 'thought');
+
+  assert.equal(task.msgs.length, 1);
+  assert.equal(task.msgs[0].content, 'Inspecting the workspace. I will read the relevant file.');
+  assert.equal(task.msgs[0].meta.chunks, 2);
+  assert.equal(task.msgs[0].kind, 'think');
+});
+
+test('plan steps do not render in the timeline', () => {
+  assert.doesNotMatch(APP, /core-plan/, 'the PWA must not render a plan card');
+  assert.doesNotMatch(CSS, /core-plan/, 'the hidden plan card must not retain styles');
+  const timeline = extractFn('renderTimeline');
+  assert.doesNotMatch(timeline, /task\\.plan/, 'renderTimeline must not append plan state');
+});
+
 test('a progress step rides the card its tool_start made, verbatim', () => {
   const { fn, makeTask } = harness();
   const task = makeTask();
@@ -243,10 +265,23 @@ test('a finished call stops showing the live line', () => {
   assert.match(APP, /const running = d\.status === 'Running';/);
 });
 
-test('STEP_TYPES names progress, matching the loop vocabulary', () => {
+test('a real thought survives an assistant step without a duplicate summary', () => {
+  const { fn, makeTask } = harness();
+  const task = makeTask();
+  task.msgs.push({ id: 'thought', kind: 'think', content: 'The real reasoning arrived.',
+    meta: { stream: true, chunks: 1 } });
+
+  fn(task, { type: 'assistant', content: 'The answer', reasoning: '' }, 'thought');
+
+  assert.equal(task.msgs[0].content, 'The real reasoning arrived.');
+  assert.equal(task.msgs[0].kind, 'think');
+});
+
+test('STEP_TYPES names progress and reasoning, matching the loop vocabulary', () => {
   const list = slice(APP, 'const STEP_TYPES = [', '];');
   const named = [...list.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
   assert.ok(named.includes('progress'), 'the mirror never learned the new step type');
+  assert.ok(named.includes('reasoning'), 'the mirror never learned the reasoning step type');
   assert.deepEqual([...new Set(named)].sort(), named.slice().sort(), 'STEP_TYPES lists a type twice');
   // The chain has to agree with the list: every type the dispatch speaks for is
   // listed. Scoped to the `kind ===` comparisons, because the branches also match on
@@ -258,7 +293,7 @@ test('STEP_TYPES names progress, matching the loop vocabulary', () => {
   assert.ok(handled.length >= 10, `only ${handled.length} dispatch arms parsed - the chain changed shape`);
   assert.deepEqual(handled.filter((k) => !named.includes(k)), [],
     'applyCoreStep handles a type STEP_TYPES does not list');
-  for (const kind of ['tool_start', 'progress', 'tool']) {
+  for (const kind of ['tool_start', 'progress', 'reasoning', 'tool']) {
     assert.ok(handled.includes(kind), `applyCoreStep no longer speaks for ${kind}`);
   }
   // Order carries meaning: progress is documented as landing between the two.
