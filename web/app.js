@@ -2426,14 +2426,14 @@
     task.endNoted = false;
     task.startedAt = Date.now();
 
-    pushMsg(task, { author: 'Liso7150', content: text || '(attachments)', kind: 'user', collapsed: false });
+    pushMsg(task, { author: 'Foxen', content: text || '(attachments)', kind: 'user', collapsed: false });
 
     for (const att of attachments) {
       // The card keeps what the picker read, because it is the only copy the
       // page can open: a browser hands over a name, a size and the bytes, and
       // never the file's location, so there is no path for the backend to read.
       pushMsg(task, {
-        author: 'Liso7150', content: 'Attached: ' + att.name, kind: 'attach', collapsed: false,
+        author: 'Foxen', content: 'Attached: ' + att.name, kind: 'attach', collapsed: false,
         meta: {
           title: att.name,
           size: formatFileSize(att.size),
@@ -3127,6 +3127,32 @@
     return workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0] || null;
   }
 
+  function createTaskInWorkspace(workspaceId) {
+    const ws = workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    activeWorkspaceId = ws.id;
+    const id = state.nextId++;
+    state.tasks.push({
+      id,
+      title: 'New task',
+      status: 'Idle',
+      repo: ws.name,
+      repoId: ws.repoId || 'local',
+      workspaceId: ws.id,
+      branch: 'main',
+      msgs: [],
+      backendId: null,
+      startedAt: null,
+    });
+    state.activeId = id;
+    state.queued = [];
+    state.attentionOnly = false;
+    saveState();
+    saveWorkspaces();
+    renderAll();
+    composerInput.focus();
+  }
+
   function saveWorkspaces() {
     localStorage.setItem('fennec-workspaces', JSON.stringify(workspaces));
     localStorage.setItem('fennec-active-workspace', activeWorkspaceId || '');
@@ -3233,10 +3259,11 @@
         <div class="workspace-row">
           <span class="workspace-icon" style="${ws.color ? 'background:' + escapeHtml(ws.color) : ''}">${escapeHtml(ws.icon || '📁')}</span>
           <span class="workspace-label">${escapeHtml(ws.name)}</span>
+          <button class="workspace-new-task" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Add task to workspace">+</button>
           <button class="workspace-delete" data-id="${escapeHtml(ws.id)}" type="button" aria-label="Delete workspace">×</button>
         </div>`;
       li.querySelector('.workspace-row').addEventListener('click', (e) => {
-        if (e.target.classList.contains('workspace-delete')) return;
+        if (e.target.classList.contains('workspace-delete') || e.target.classList.contains('workspace-new-task')) return;
         activeWorkspaceId = ws.id;
         saveWorkspaces();
       });
@@ -3338,6 +3365,13 @@
         list.appendChild(empty);
       }
     }
+
+    list.querySelectorAll('.workspace-new-task').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        createTaskInWorkspace(btn.dataset.id);
+      });
+    });
 
     list.querySelectorAll('.workspace-delete').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -3584,6 +3618,62 @@
     } catch (_) { /* backend offline — local workspaces only */ }
   }
 
+  async function refreshGithub() {
+    const accountEl = $('github-account-status');
+    const listEl = $('github-repository-list');
+    if (!accountEl || !listEl) return;
+    accountEl.textContent = 'Checking GitHub authentication…';
+    listEl.replaceChildren();
+    const loading = document.createElement('span');
+    loading.className = 'settings-hint';
+    loading.textContent = 'Loading repositories…';
+    listEl.appendChild(loading);
+    try {
+      const [accountResponse, repositoriesResponse] = await Promise.all([
+        apiFetch('/api/github/account'),
+        apiFetch('/api/github/repositories'),
+      ]);
+      const account = accountResponse.ok ? await accountResponse.json() : null;
+      const repositories = repositoriesResponse.ok ? await repositoriesResponse.json() : null;
+      if (!account || !account.authenticated) {
+        accountEl.textContent = (account && account.error) || 'GitHub is not authenticated.';
+        listEl.replaceChildren();
+        const hint = document.createElement('span');
+        hint.className = 'settings-hint';
+        hint.textContent = 'Run “gh auth login” locally, then refresh.';
+        listEl.appendChild(hint);
+        return;
+      }
+      const profile = account.account || {};
+      accountEl.textContent = profile.display_name
+        ? profile.display_name + ' (@' + profile.login + ')'
+        : '@' + profile.login;
+      listEl.replaceChildren();
+      for (const repository of (repositories && repositories.repositories) || []) {
+        const row = document.createElement('a');
+        row.className = 'github-repository';
+        row.href = repository.html_url;
+        row.target = '_blank';
+        row.rel = 'noopener noreferrer';
+        row.textContent = repository.full_name + (repository.private ? ' · private' : '');
+        listEl.appendChild(row);
+      }
+      if (!listEl.childElementCount) {
+        const empty = document.createElement('span');
+        empty.className = 'settings-hint';
+        empty.textContent = 'No repositories were returned.';
+        listEl.appendChild(empty);
+      }
+    } catch (_) {
+      accountEl.textContent = 'Could not reach the coding-agent backend.';
+      listEl.replaceChildren();
+      const hint = document.createElement('span');
+      hint.className = 'settings-hint';
+      hint.textContent = 'Check the backend connection, then refresh.';
+      listEl.appendChild(hint);
+    }
+  }
+
   // ── Settings dialog wiring ─────────────────────────────────────────────────
   function applyTheme(theme) {
     const themes = {
@@ -3622,9 +3712,11 @@
       $('notifications').checked = settings.notifications;
       $('debug-mode').checked = settings.debug;
       $('experimental').checked = settings.experimental;
+      refreshGithub();
       settingsDialog.showModal();
     });
     $('settings-close').addEventListener('click', () => settingsDialog.close());
+    $('github-refresh').addEventListener('click', refreshGithub);
     settingsDialog.addEventListener('click', (e) => {
       if (e.target === settingsDialog) settingsDialog.close();
     });
@@ -3762,29 +3854,67 @@
     fileInput.value = '';
   });
 
-  // Dictation (click to start / stop)
-  let recognition = null;
-  $('btn-dictate').addEventListener('click', () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { toast('Speech recognition not supported in this browser.', 'warn'); return; }
+  // Dictation (click to start, click again to stop). The clip is posted to
+  // core's /api/stt, which is the only route that starts the faster-whisper
+  // sidecar (`engine.py:ensure_stt`); `stt.py` takes raw audio bytes, so the
+  // blob goes out as its own body with the recorder's mime type.
+  // Browser SpeechRecognition was the old path: it transcribes on Google's
+  // servers, which the local-first promise rules out, and its empty onerror
+  // made a refused microphone look exactly like a silent one.
+  let recorder = null;
+  $('btn-dictate').addEventListener('click', async () => {
     const btn = $('btn-dictate');
-    if (recognition) {
-      recognition.stop();
-      recognition = null;
-      btn.textContent = '🎤';
+    if (recorder) { recorder.stop(); return; }
+    if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
+      toast('This browser cannot record from the microphone.', 'warn');
       return;
     }
-    recognition = new SR();
-    recognition.lang = 'en-US';
-    recognition.interimResults = false;
-    recognition.onresult = (e) => {
-      composerInput.value += e.results[0][0].transcript;
-      updateSendButton();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      toast('Microphone unavailable: ' +
+        (e && e.name === 'NotAllowedError' ? 'permission refused in the browser'
+          : (e && e.message) || String(e)), 'warn');
+      return;
+    }
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    const stop = () => { stream.getTracks().forEach((t) => t.stop()); recorder = null; btn.textContent = '🎤'; };
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onerror = (e) => {
+      stop();
+      toast('Recording failed: ' + ((e && e.error && e.error.name) || 'unknown error'), 'warn');
     };
-    recognition.onend = () => { recognition = null; btn.textContent = '🎤'; };
-    recognition.onerror = () => { recognition = null; btn.textContent = '🎤'; };
+    rec.onstop = async () => {
+      const type = rec.mimeType || 'audio/webm';
+      stop();
+      const blob = new Blob(chunks, { type });
+      if (!blob.size) { toast('The microphone captured nothing.', 'warn'); return; }
+      // A cold sidecar is started and loaded inside this one request, so the
+      // glyph has to say "listening to you took, now transcribing" or the
+      // button looks dead for the seconds the model takes.
+      btn.textContent = '⋯';
+      try {
+        const res = await apiFetch('/api/stt', {
+          method: 'POST', headers: { 'Content-Type': type }, body: blob,
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || body.error || ('http ' + res.status));
+        const text = (body.text || '').trim();
+        if (!text) { toast("Didn't catch any words.", 'info'); return; }
+        const sep = composerInput.value && !/\s$/.test(composerInput.value) ? ' ' : '';
+        composerInput.value += sep + text;
+        composerInput.focus();
+        updateSendButton();
+      } catch (e) {
+        toast('Speech recognition failed: ' + e.message, 'warn');
+      }
+      btn.textContent = '🎤';
+    };
+    recorder = rec;
     btn.textContent = '⏹';
-    recognition.start();
+    rec.start();
   });
 
   // Permission dropdown

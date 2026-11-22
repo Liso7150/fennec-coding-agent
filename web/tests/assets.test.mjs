@@ -114,6 +114,28 @@ test('the shell has no duplicate ids', () => {
   assert.deepEqual(dupes, [], 'index.html renders these ids more than once');
 });
 
+test('GitHub settings exposes read-only account and repository integration', () => {
+  assert.match(HTML, /data-tab="github"/);
+  assert.match(HTML, /id="github-account-status"/);
+  assert.match(HTML, /id="github-repository-list"/);
+  assert.match(HTML, /id="github-refresh"/);
+  assert.match(APP, /apiFetch\('\/api\/github\/account'\)/);
+  assert.match(APP, /apiFetch\('\/api\/github\/repositories'\)/);
+  assert.match(APP, /noopener noreferrer/);
+  assert.doesNotMatch(APP, /github-token|github-access-token/i, 'GitHub tokens must not be stored by the PWA');
+});
+
+test('workspace rows expose an isolated add-task action', () => {
+  const render = slice(APP, 'function renderWorkspaces()', '\n  }\n\n  // ── Workspace creation dialog');
+  assert.match(render, /class="workspace-new-task"/);
+  assert.match(render, /aria-label="Add task to workspace"/);
+  assert.match(render, /createTaskInWorkspace\(btn\.dataset\.id\)/);
+  assert.match(render, /e\.stopPropagation\(\);\n        createTaskInWorkspace/);
+  assert.match(render, /e\.target\.classList\.contains\('workspace-new-task'\)/);
+  assert.match(APP, /function createTaskInWorkspace\(workspaceId\)/);
+  assert.match(APP, /workspaceId: ws\.id,/);
+});
+
 test('the timeline words each tool exactly as the native shells word it', (t) => {
   // app.js:describeCall says it mirrors fennec-ui/src/attention.rs:describe_call.
   // Parity between the three surfaces is a standing requirement, and a phrase that

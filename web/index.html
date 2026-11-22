@@ -25,7 +25,7 @@
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
       </svg>
       <span class="brand-name">Fennec</span>
-      <span class="brand-subtitle">Liso7150 / local-first workspace</span>
+      <span class="brand-subtitle">Foxen / local-first workspace</span>
     </div>
     <div class="topbar-status">
       <span class="status-dot" data-state="online"></span>
@@ -42,7 +42,7 @@
     <aside class="left-panel" aria-label="Navigation">
       <div class="workspace-section">
         <div class="section-label">ACTIVE WORKSPACE</div>
-        <div class="workspace-name" id="workspace-name">Liso7150/fennec</div>
+        <div class="workspace-name" id="workspace-name">Foxen/fennec</div>
         <div class="workspace-meta">
           <span class="branch-name" id="branch-name">main</span>
           <span>·</span>
@@ -82,7 +82,7 @@
       </div>
 
       <div class="user-section">
-        <div class="user-name">Liso7150</div>
+        <div class="user-name">Foxen</div>
         <div class="user-account">Local account</div>
       </div>
     </aside>
@@ -91,7 +91,7 @@
     <main class="center-panel">
       <!-- Timeline header -->
       <div class="timeline-header" id="timeline-header" hidden>
-        <div class="timeline-header-title" id="timeline-repo">Liso7150/fennec · main</div>
+        <div class="timeline-header-title" id="timeline-repo">Foxen/fennec · main</div>
         <div class="timeline-header-main">
           <div>
             <h1 id="timeline-title">New task</h1>
@@ -296,6 +296,7 @@
       <nav class="settings-tabs">
         <button class="settings-tab active" data-tab="connection" type="button">Connection</button>
         <button class="settings-tab" data-tab="appearance" type="button">Appearance</button>
+        <button class="settings-tab" data-tab="github" type="button">GitHub</button>
         <button class="settings-tab" data-tab="behavior" type="button">Behavior</button>
         <button class="settings-tab" data-tab="advanced" type="button">Advanced</button>
       </nav>
@@ -324,6 +325,24 @@
             <button class="quiet-button" type="button" id="disconnect-button">Disconnect</button>
           </div>
           <p id="connect-error" class="error-text" role="alert" hidden></p>
+        </div>
+        <!-- GitHub tab -->
+        <div class="settings-panel" id="panel-github">
+          <h3>GitHub</h3>
+          <div class="settings-card">
+            <label>Account</label>
+            <div id="github-account-status" class="github-status">Checking GitHub authentication…</div>
+            <span class="settings-hint">Uses the local GitHub CLI sign-in. Fennec never stores or displays your token.</span>
+            <div class="button-row github-actions">
+              <button class="primary-button" type="button" id="github-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="settings-card">
+            <label>Repositories</label>
+            <div id="github-repository-list" class="github-repository-list">
+              <span class="settings-hint">Sign in to GitHub to list repositories.</span>
+            </div>
+          </div>
         </div>
         <!-- Appearance tab -->
         <div class="settings-panel" id="panel-appearance">

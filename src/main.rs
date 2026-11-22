@@ -24,6 +24,7 @@ mod agent;
 mod repository;
 pub mod events;
 mod updater;
+mod github;
 mod ag_ui;
 
 use task::{Task, TaskStatus, TaskId};
@@ -108,6 +109,8 @@ async fn main() {
         .route("/api/repositories", get(list_repositories).post(register_repository))
         .route("/api/repositories/:id", get(get_repository))
         .route("/api/repositories/:id/status", get(repository_status))
+        .route("/api/github/account", get(github_account))
+        .route("/api/github/repositories", get(github_repositories))
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
         .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
@@ -537,6 +540,14 @@ async fn repository_status(
         }))),
         None => Err(StatusCode::NOT_FOUND),
     }
+}
+
+async fn github_account() -> Json<github::GithubAccountStatus> {
+    Json(github::account_status().await)
+}
+
+async fn github_repositories() -> Json<github::GithubRepositoryStatus> {
+    Json(github::repository_status().await)
 }
 
 async fn events_sse(State(state): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

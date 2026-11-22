@@ -158,6 +158,11 @@ label { font-size: 12px; }
   opacity: 0; background: none; border: none; color: var(--text-muted);
   font-size: 12px; padding: 2px 4px; cursor: pointer;
 }
+.workspace-new-task {
+  background: none; border: none; color: var(--text-muted); font-size: 14px;
+  line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 4px;
+}
+.workspace-new-task:hover { background: var(--surface-light); color: var(--text); }
 .workspace-item:hover .workspace-delete { opacity: 1; }
 .workspace-delete:hover { color: var(--danger); }
 .icon-button-small {
@@ -780,6 +785,11 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .settings-card input[type="password"],
 .settings-card input[type="number"] { width: 100%; min-height: 36px; margin-bottom: 6px; }
 .settings-hint { font-size: 11px; color: var(--text-muted); display: block; }
+.github-status { font-size: 13px; margin-bottom: 8px; }
+.github-actions { margin-top: 10px; }
+.github-repository-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.github-repository { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.github-repository:hover { color: var(--brand); }
 
 /* Theme list */
 .theme-list { display: flex; flex-direction: column; gap: 4px; }
