@@ -38,7 +38,10 @@
     return v === null ? fallback : v;
   }
 
-  let apiBase = (readSetting('fennec-server-url', '') || '').replace(/\/+$/, '');
+  // The page is served by the Rust backend it talks to, so same-origin is the
+  // only truth here; the native shell keeps a Connection tab because it is a
+  // separate client that must find the backend.
+  const apiBase = '';
   // Core refuses /api/* without the loopback client header; send it on every call.
   function apiFetch(path, opts) {
     const o = opts || {};
@@ -50,7 +53,6 @@
     autoSave: readSetting('fennec-auto-save', 'true') !== 'false',
     notifications: readSetting('fennec-notifications', 'true') !== 'false',
     debug: readSetting('fennec-debug', 'false') === 'true',
-    experimental: readSetting('fennec-experimental', 'false') === 'true',
     fontSize: parseInt(readSetting('fennec-font-size', '14'), 10) || 14,
   };
 
@@ -1560,13 +1562,31 @@
   // modal. Each open is numbered: two clicks in a row must not let the first
   // file's text land on top of the second's name.
   let fileViewSeq = 0;
+  // The viewer paints two kinds. Whichever is not the current one is hidden and
+  // emptied, so a 4 MB bitmap does not stay decoded behind a text file, and a
+  // stale `src` cannot flash back when the panel is reopened for other text.
+  function setViewerKind(kind, name) {
+    const img = $('file-viewer-image');
+    const body = $('file-viewer-body');
+    if (!img || !body) return;
+    const image = kind === 'image';
+    body.hidden = image;
+    img.hidden = !image;
+    if (image) {
+      img.alt = name || 'image';
+    } else {
+      img.alt = '';
+      img.removeAttribute('src');
+    }
+  }
+
   async function openDeliveredFile(m) {
     const seq = ++fileViewSeq;
-    const panel = $('file-viewer');
-    if (!panel) return;
+    const dialog = $('file-viewer-dialog');
+    if (!dialog) return;
     const meta = m.meta || {};
     const name = meta.title || 'file';
-    $('file-viewer-name').textContent = name;
+    $('file-viewer-title').textContent = name;
     const where = joinPath(meta.workspace || runFolder(), meta.path || '');
     const pathEl = $('file-viewer-path');
     pathEl.textContent = where;
@@ -1575,12 +1595,8 @@
     pathEl.hidden = !where;
     $('file-viewer-meta').textContent = 'reading…';
     $('file-viewer-body').textContent = '';
-    if (!state.inspectorOpen) {
-      state.inspectorOpen = true;
-      localStorage.setItem('fennec-inspector-open', 'true');
-      applyInspectorState();
-    }
-    panel.hidden = false;
+    setViewerKind('text');
+    if (!dialog.open) dialog.showModal();
     const res = await readDelivered(m);
     if (seq !== fileViewSeq) return;
     if (res.error) {
@@ -1598,8 +1614,14 @@
   }
 
   function closeFileViewer() {
-    const panel = $('file-viewer');
-    if (panel) panel.hidden = true;
+    const dialog = $('file-viewer-dialog');
+    if (dialog && dialog.open) dialog.close();
+    // A closed dialog holds no bitmap: the decoded image is as big as the file.
+    const img = $('file-viewer-image');
+    if (img) {
+      img.hidden = true;
+      img.removeAttribute('src');
+    }
     // Invalidate whatever read is still in flight so it cannot refill a closed panel.
     fileViewSeq++;
   }
@@ -1989,6 +2011,7 @@
 
   // ── Render all ─────────────────────────────────────────────────────────────
   function renderAll() {
+    document.querySelector('[data-nav="attention"]').classList.toggle('active', state.attentionOnly);
     renderTaskList();
     renderTimeline();
     renderQueue();
@@ -3002,30 +3025,18 @@
   }
 
   // ── Nav handlers ───────────────────────────────────────────────────────────
+  // The rail carries only the two filter toggles the native shell has; new
+  // tasks come from a workspace row's + or the composer, as they do there.
   function handleNav(nav) {
-    document.querySelectorAll('.nav-item').forEach((el) => el.classList.remove('active'));
-    const btn = document.querySelector(`[data-nav="${nav}"]`);
-    if (btn) btn.classList.add('active');
-
     switch (nav) {
-      case 'new-task':
-        state.activeId = null;
-        state.queued = [];
-        state.attentionOnly = false;
-        saveState();
-        renderAll();
-        composerInput.focus();
-        break;
       case 'attention': {
         state.attentionOnly = !state.attentionOnly;
-        document.querySelectorAll('.nav-item').forEach((el) => el.classList.remove('active'));
-        const target = document.querySelector(`[data-nav="${state.attentionOnly ? 'attention' : 'coding'}"]`);
-        if (target) target.classList.add('active');
         renderAll();
         break;
       }
-      case 'search':
+      case 'search': {
         taskSearch.hidden = !taskSearch.hidden;
+        document.querySelector('[data-nav="search"]').classList.toggle('active', !taskSearch.hidden);
         if (!taskSearch.hidden) {
           taskSearch.focus();
         } else {
@@ -3034,10 +3045,7 @@
           renderTaskList();
         }
         break;
-      case 'coding':
-        composerInput.placeholder = 'What are you trying to get done?';
-        composerInput.focus();
-        break;
+      }
     }
   }
 
@@ -3060,6 +3068,284 @@
     applyInspectorState();
   }
 
+  // ── Inspector tabs: Overview / Files / Browser ─────────────────────────────
+  // The panel was one column of run context. Files and Browser each want the
+  // whole column — one browses the same workspace jail the run works in, the
+  // other reads a web page as plain text — so context became a tab instead of
+  // a fourth section nobody scrolls to. The opened tab is kept across reloads.
+  const INSP_TABS = ['overview', 'files', 'browser'];
+  let inspTab = 'overview';
+  function setInspTab(name) {
+    inspTab = INSP_TABS.includes(name) ? name : 'overview';
+    localStorage.setItem('fennec-insp-tab', inspTab);
+    INSP_TABS.forEach((tab) => {
+      const btn = $('insp-tab-' + tab);
+      const view = $('insp-view-' + tab);
+      if (btn) {
+        btn.classList.toggle('active', tab === inspTab);
+        btn.setAttribute('aria-selected', String(tab === inspTab));
+        btn.tabIndex = tab === inspTab ? 0 : -1;
+      }
+      if (view) view.hidden = tab !== inspTab;
+    });
+    if (inspTab === 'files' && !fmState.loaded) loadFmDir(fmState.path);
+  }
+
+  // ── Files: the workspace, through the same jail the run sees ───────────────
+  const fmState = { path: '.', root: '', loaded: false };
+  let fmSeq = 0;
+
+  function fmNote(text) {
+    const note = $('fm-note');
+    if (!note) return;
+    note.textContent = text || '';
+    note.hidden = !text;
+  }
+
+  // '.' (no workspace chosen) means the server's own default root, which is
+  // what an empty `workspace` parameter asks for; naming it would double-encode
+  // a folder the jail already resolves to.
+  function fmWorkspaceParam() {
+    const ws = runFolder();
+    return ws && ws !== '.' ? '&workspace=' + encodeURIComponent(ws) : '';
+  }
+
+  async function loadFmDir(path) {
+    const list = $('fm-list');
+    if (!list) return;
+    const seq = ++fmSeq;
+    fmState.path = path || '.';
+    fmState.loaded = true;
+    const pathEl = $('fm-path');
+    if (pathEl) {
+      pathEl.textContent = fmState.path;
+      pathEl.title = fmState.root || '';
+    }
+    fmNote('reading…');
+    list.textContent = '';
+    let data = null;
+    let error = '';
+    try {
+      const r = await apiFetch('/api/work/files?path=' + encodeURIComponent(fmState.path) + fmWorkspaceParam());
+      const j = await r.json().catch(() => null);
+      if (r.ok && j && j.ok) data = j;
+      else error = (j && j.error) || ('HTTP ' + r.status);
+    } catch (e) {
+      error = e && e.message ? String(e.message) : String(e);
+    }
+    if (seq !== fmSeq) return;
+    if (!data) {
+      fmNote('Could not list this folder: ' + error);
+      return;
+    }
+    fmState.root = data.root || '';
+    if (pathEl) pathEl.title = fmState.root;
+    const entries = (Array.isArray(data.entries) ? data.entries.slice() : [])
+      .sort((a, b) => (Number(!!b.is_dir) - Number(!!a.is_dir)) || String(a.name).localeCompare(String(b.name)));
+    fmNote(entries.length ? '' : 'This folder is empty.');
+    for (const entry of entries) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'fm-row' + (entry.is_dir ? ' fm-dir' : '');
+      row.innerHTML = '<span class="fm-row-icon">' + iconSvg(entry.is_dir ? 'workspace' : 'file') + '</span>'
+        + '<span class="fm-row-name mono">' + escapeHtml(entry.name) + '</span>'
+        + (entry.is_dir ? '' : '<span class="fm-row-size">' + escapeHtml(formatFileSize(Number(entry.size) || 0)) + '</span>');
+      row.addEventListener('click', () => {
+        const base = fmState.path === '.' ? '' : fmState.path.replace(/\/+$/, '');
+        const child = (base ? base + '/' : '') + entry.name;
+        if (entry.is_dir) loadFmDir(child);
+        else openFmFile(child, entry.name);
+      });
+      list.appendChild(row);
+    }
+  }
+
+  function fmUp() {
+    if (fmState.path === '.' || !fmState.path) return;
+    const parent = fmState.path.replace(/\/+$/, '').split('/').slice(0, -1).join('/');
+    loadFmDir(parent || '.');
+  }
+
+  // A listed file opens in the same viewer a delivered card uses — one dialog,
+  // one race guard — but reads through the Rust jail route, not the core one.
+  async function openFmFile(path, name) {
+    const seq = ++fileViewSeq;
+    const dialog = $('file-viewer-dialog');
+    if (!dialog) return;
+    $('file-viewer-title').textContent = name;
+    const pathEl = $('file-viewer-path');
+    pathEl.textContent = joinPath(fmState.root, path);
+    pathEl.hidden = !fmState.root;
+    $('file-viewer-meta').textContent = 'reading…';
+    $('file-viewer-body').textContent = '';
+    setViewerKind('text');
+    if (!dialog.open) dialog.showModal();
+    let data = null;
+    let error = '';
+    try {
+      const r = await apiFetch('/api/work/file?path=' + encodeURIComponent(path) + fmWorkspaceParam());
+      const j = await r.json().catch(() => null);
+      if (r.ok && j && j.ok) data = j;
+      else error = (j && j.error) || ('The backend refused ' + path + ' (HTTP ' + r.status + ').');
+    } catch (e) {
+      error = 'Could not reach the backend: ' + (e && e.message ? e.message : e);
+    }
+    if (seq !== fileViewSeq) return;
+    if (!data) {
+      $('file-viewer-meta').textContent = error;
+      return;
+    }
+    // The route answers an image with its bytes, not with lossy text: painting a
+    // PNG as a `<pre>` is what showed a wall of replacement characters here.
+    if (data.kind === 'image') {
+      setViewerKind('image', name);
+      $('file-viewer-image').src = 'data:' + data.mime + ';base64,' + (data.data || '');
+      $('file-viewer-meta').textContent = data.mime + ' · '
+        + formatFileSize(Number(data.bytes) || 0);
+      return;
+    }
+    setViewerKind('text');
+    const text = String(data.content || '');
+    const n = typeof data.lines === 'number' ? data.lines : viewLines(text);
+    const bytes = typeof data.bytes === 'number' ? data.bytes : new TextEncoder().encode(text).length;
+    $('file-viewer-meta').textContent = (n != null ? n + (n === 1 ? ' line' : ' lines') + ' · ' : '')
+      + formatFileSize(bytes);
+    $('file-viewer-body').textContent = text;
+  }
+
+  // ── Browser: read a page graphically, no webview ───────────────────────────
+  // The Rust server fetches the address and serves the markup to the frame
+  // below, sandboxed to an opaque origin so the page's scripts cannot reach
+  // the app. Its injected router posts link and form targets back here, and
+  // they re-read through the same route — browsing stays inside the pane, and
+  // every hop is one the user, a link they clicked, or a form the page
+  // submitted named. The last of those is bounded; see brAuto.
+  const brHist = [];
+
+  // A page can drive the pane on its own: a form it submits at boot, or a
+  // `location` it writes, asks for another read of a real site each time.
+  // Measured on a Google results page, whose script submits a logging form as
+  // it boots: nine reads in nine seconds, none of them asked for. Two in a row
+  // is a page that redirects; the third is a loop, and the pane says so
+  // instead of going on hammering the site.
+  const brAutoMax = 3;
+  let brAsked = true;
+  let brAuto = 0;
+
+  function brStopAuto(url) {
+    const frame = $('browser-frame');
+    const metaEl = $('browser-meta');
+    brAuto = 0;
+    brAsked = true;
+    if (frame) frame.src = 'about:blank';
+    if (url) $('browser-url').value = url;
+    metaEl.textContent = 'This page kept navigating on its own, so the pane stopped it.';
+    metaEl.hidden = false;
+  }
+
+  function brNavigate(rawUrl, push = true, auto = false) {
+    const url = String(rawUrl || '').trim();
+    if (!url) return;
+    const frame = $('browser-frame');
+    if (!frame) return;
+    const titleEl = $('browser-title');
+    const metaEl = $('browser-meta');
+    brAuto = auto ? brAuto + 1 : 0;
+    if (brAuto >= brAutoMax) {
+      brStopAuto(url);
+      return;
+    }
+    brAsked = true;
+    if (push && brHist[brHist.length - 1] !== url) brHist.push(url);
+    const input = $('browser-url');
+    if (input && document.activeElement !== input) input.value = url;
+    titleEl.textContent = '';
+    titleEl.hidden = true;
+    metaEl.textContent = 'reading…';
+    metaEl.hidden = false;
+    frame.hidden = false;
+    frame.src = '/browse/doc?u=' + encodeURIComponent(url);
+  }
+
+  function brBack() {
+    if (brHist.length > 1) brHist.pop();
+    const prev = brHist[brHist.length - 1];
+    if (prev) brNavigate(prev, false);
+  }
+
+  function initBrowserFrame() {
+    window.addEventListener('message', (event) => {
+      const frame = $('browser-frame');
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data || {};
+      const metaEl = $('browser-meta');
+      if (data.fennecBrowseGo) {
+        const target = String(data.fennecBrowseGo);
+        if (/^https?:/i.test(target)) brNavigate(target, true, !!data.fennecBrowseAuto);
+        return;
+      }
+      if (data.fennecBrowseErr) {
+        metaEl.textContent = String(data.fennecBrowseErr);
+        return;
+      }
+      const read = data.fennecBrowseRead;
+      if (!read) return;
+      // A read the pane never asked for is the frame navigating itself, which
+      // is the other half of the same loop and counts toward it.
+      if (!brAsked) {
+        brAuto += 1;
+        if (brAuto >= brAutoMax) {
+          brStopAuto('');
+          return;
+        }
+      }
+      brAsked = false;
+      const titleEl = $('browser-title');
+      if (read.e) {
+        metaEl.textContent = String(read.e);
+        return;
+      }
+      titleEl.textContent = read.title || '';
+      titleEl.hidden = !read.title;
+      metaEl.textContent = read.status + ' · ' + read.url + (read.truncated ? ' · truncated' : '');
+    });
+  }
+
+  function initInspectorTabs() {
+    INSP_TABS.forEach((tab) => {
+      const btn = $('insp-tab-' + tab);
+      if (btn) btn.addEventListener('click', () => setInspTab(tab));
+    });
+    const tabs = document.querySelector('.insp-tabs');
+    if (tabs) {
+      tabs.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+        const i = INSP_TABS.indexOf(inspTab);
+        const step = event.key === 'ArrowRight' ? 1 : INSP_TABS.length - 1;
+        const next = INSP_TABS[(i + step) % INSP_TABS.length];
+        setInspTab(next);
+        const btn = $('insp-tab-' + next);
+        if (btn) btn.focus();
+        event.preventDefault();
+      });
+    }
+    const up = $('fm-up');
+    if (up) up.addEventListener('click', fmUp);
+    const refresh = $('fm-refresh');
+    if (refresh) refresh.addEventListener('click', () => loadFmDir(fmState.path));
+    const form = $('browser-form');
+    if (form) {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        brNavigate($('browser-url').value);
+      });
+    }
+    const back = $('br-back');
+    if (back) back.addEventListener('click', brBack);
+    initBrowserFrame();
+    setInspTab(readSetting('fennec-insp-tab', 'overview'));
+  }
+
   // ── Backend health ─────────────────────────────────────────────────────────
   function updateBackendStatus() {
     statusDot.setAttribute('data-state', state.backendConnected ? 'online' : 'error');
@@ -3068,20 +3354,17 @@
   }
 
   async function checkHealth() {
-    let payload = null;
     try {
       // /api/health is the one route both backends answer; /health is Rust-only,
       // so probing it read a running core as offline.
       const resp = await apiFetch('/api/health');
       state.backendConnected = resp.ok;
-      if (resp.ok) payload = await resp.json().catch(() => null);
     } catch (_) {
       state.backendConnected = false;
     }
-    // Only the Python agent server probes outlets, and only its payload says it is
-    // answering. The Rust backend has no /api/outlets at all, so asking it would
-    // render every lane as a row of nothing.
-    state.outlets = payload && payload.app ? await loadOutlets() : outletLines(null);
+    // Whichever loop answers /api/health also serves /api/outlets, so the Rust
+    // backend probes the lanes too. Only no reply at all reads as offline.
+    state.outlets = state.backendConnected ? await loadOutlets() : outletLines(null);
     updateBackendStatus();
     // A queue that survived a page reload had no finishing run to hand it off
     // to, so it sat at "Next" with nothing able to start it. Once the backend
@@ -3098,18 +3381,26 @@
   }
 
   async function loadModels() {
+    let served = null;
     try {
       const resp = await apiFetch('/api/models');
       if (resp.ok) {
         const data = await resp.json();
         const list = Array.isArray(data) ? data : Array.isArray(data.models) ? data.models : null;
         if (list && list.length > 0) {
-          models = list.map((m) => typeof m === 'string'
+          served = list.map((m) => typeof m === 'string'
             ? { id: m, name: m }
             : { id: m.id || m.name, name: m.name || m.display_name || m.id });
+          // The checkpoint the engine proved leads the menu, then the models the
+          // suite can load — the same rows the native dropdown renders.
+          models = served.concat(FALLBACK_MODELS.filter((f) => !served.some((s) => s.id === f.id)));
         }
       }
     } catch (_) { /* endpoint absent — keep fallback list */ }
+    // The engine holds one checkpoint and answers every request as it, so a
+    // stored choice it isn't serving would name a model nothing replies for.
+    // Only the served ids settle the choice; the rest of the menu stays offered.
+    if (served && !served.some((m) => m.id === currentModel)) currentModel = served[0].id;
     if (!models.some((m) => m.id === currentModel)) {
       models.unshift({ id: currentModel, name: currentModel });
     }
@@ -3146,7 +3437,7 @@
     dl.className = 'model-option model-download';
     dl.disabled = true;
     dl.title = 'Model downloads are not available yet';
-    dl.innerHTML = iconSvg('download', 'model-download-icon') + '<span class="model-option-name muted">Download new model…</span>';
+    dl.innerHTML = iconSvg('download', 'ui-icon model-download-icon') + '<span class="model-option-name muted">Download new model…</span>';
     dd.appendChild(dl);
     const sep2 = document.createElement('div');
     sep2.className = 'model-dropdown-sep';
@@ -3248,10 +3539,97 @@
     updateWorkspaceDisplay();
   }
 
+  // ── Pane resize (left rail + inspector) ──────────────────────────────────
+  // The width lives as an inline CSS custom property on .app-layout, which is
+  // how a dragged value outranks each media step's default. The narrow tiers
+  // re-declare smaller defaults but keep both handles live; below 700px only
+  // the rail's goes, because the rail itself is hidden there.
+  function paneLimits(pane) {
+    // No pane may eat more than 40% of the window; the timeline has to live.
+    const cap = Math.floor(window.innerWidth * 0.4);
+    return pane === 'rail' ? [180, Math.min(440, cap)] : [220, Math.min(560, cap)];
+  }
+
+  function initPaneResize() {
+    const layout = $('app-layout');
+    if (!layout) return;
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('fennec-pane-widths') || '{}'); } catch (_) { saved = {}; }
+    const varName = (pane) => pane === 'rail' ? '--rail-w' : '--insp-w';
+    const panelOf = (pane) => layout.querySelector(pane === 'rail' ? '.left-panel' : '.right-panel');
+    const widthOf = (pane) => panelOf(pane).getBoundingClientRect().width;
+    const apply = (pane, w) => layout.style.setProperty(varName(pane), w + 'px');
+    const persist = () => localStorage.setItem('fennec-pane-widths', JSON.stringify(saved));
+    for (const pane of ['rail', 'insp']) {
+      const handle = layout.querySelector('.pane-resizer[data-pane=' + pane + ']');
+      if (!handle) continue;
+      if (Number.isFinite(saved[pane])) {
+        const [lo, hi] = paneLimits(pane);
+        apply(pane, Math.min(hi, Math.max(lo, saved[pane])));
+      }
+      handle.setAttribute('aria-valuenow', String(Math.round(widthOf(pane))));
+      const setWidth = (w) => {
+        const [lo, hi] = paneLimits(pane);
+        const clamped = Math.round(Math.min(hi, Math.max(lo, w)));
+        apply(pane, clamped);
+        handle.setAttribute('aria-valuenow', String(clamped));
+        return clamped;
+      };
+      handle.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        e.preventDefault();
+        const from = e.clientX;
+        const startW = widthOf(pane);
+        handle.classList.add('dragging');
+        const move = (ev) => {
+          const dx = ev.clientX - from;
+          // The rail grows rightward, the inspector grows leftward.
+          setWidth(startW + (pane === 'rail' ? dx : -dx));
+        };
+        const up = () => {
+          handle.classList.remove('dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          window.removeEventListener('pointercancel', up);
+          saved[pane] = Math.round(widthOf(pane));
+          persist();
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+        window.addEventListener('pointercancel', up);
+      });
+      // Double-click hands the pane back its default width.
+      handle.addEventListener('dblclick', () => {
+        delete saved[pane];
+        layout.style.removeProperty(varName(pane));
+        persist();
+        handle.setAttribute('aria-valuenow', String(Math.round(widthOf(pane))));
+      });
+      handle.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const dir = (pane === 'rail') === (e.key === 'ArrowRight') ? 12 : -12;
+        e.preventDefault();
+        saved[pane] = setWidth(widthOf(pane) + dir);
+        persist();
+      });
+    }
+  }
+
   function updateWorkspaceDisplay() {
     const ws = activeWorkspace();
     const nameEl = $('workspace-name');
+    const repoEl = $('repository-name');
+    const branchEl = $('branch-name');
+    const boundEl = $('repository-bound');
+    const unboundEl = $('repository-unbound');
+    // Mirrors fennec-ui::repository::working_in_banner: the panel always shows,
+    // and unbound it offers the connect action that opens the same picker.
+    const bound = !!(ws && ws.githubRepo);
+    if (boundEl) boundEl.hidden = !bound;
+    if (unboundEl) unboundEl.hidden = bound;
     if (nameEl && ws) nameEl.textContent = ws.name;
+    if (repoEl) repoEl.textContent = bound ? ws.githubRepo : '';
+    if (bound && branchEl) branchEl.textContent = ws.branch || 'main';
     const task = activeTask();
     if (timelineRepo) timelineRepo.textContent = ((task && task.repo) || (ws ? ws.name : 'local')) + ' · main';
   }
@@ -3372,10 +3750,12 @@
       list.appendChild(li);
     });
 
+    // A task pointing at a workspace that no longer exists still needs a row
+    // it can be reached from; with nothing orphaned there is no Unfiled group,
+    // the same as the native rail. An empty list gets the bare hint instead of
+    // hiding it inside a fake workspace row.
     const unfiled = shown.filter((t) => !t.workspaceId || !workspaces.some((w) => w.id === t.workspaceId));
-    // In the attention view an empty Unfiled group would claim there are no
-    // tasks at all; the "Approved commands" section below is the real content.
-    if (unfiled.length > 0 || (!q && shown.length === 0 && !state.attentionOnly)) {
+    if (unfiled.length > 0) {
       const li = document.createElement('li');
       li.className = 'workspace-item unfiled';
       li.innerHTML = `
@@ -3386,14 +3766,13 @@
       const ul = document.createElement('ul');
       ul.className = 'workspace-tasks';
       appendTasks(ul, unfiled);
-      if (unfiled.length === 0) {
-        const empty = document.createElement('li');
-        empty.className = 'task-empty';
-        empty.textContent = q ? 'No tasks match the filter.' : 'No tasks yet. Start with a prompt.';
-        ul.appendChild(empty);
-      }
       li.appendChild(ul);
       list.appendChild(li);
+    } else if (!q && shown.length === 0 && !state.attentionOnly) {
+      const empty = document.createElement('li');
+      empty.className = 'task-empty';
+      empty.textContent = 'No tasks yet. Start with a prompt.';
+      list.appendChild(empty);
     }
 
     // My Attention: the commands the user has already answered, newest last.
@@ -3686,6 +4065,7 @@
       saveWorkspaces();
       close();
       toast('Workspace "' + name + '" created.', 'good');
+      syncWorkspaceRepositories();
     });
   }
 
@@ -3705,6 +4085,24 @@
       }
       if (changed) saveWorkspaces();
     } catch (_) { /* backend offline — local workspaces only */ }
+  }
+
+  async function syncWorkspaceRepositories() {
+    // Mirrors the desktop's sync_workspace_github_repos: an unbound workspace
+    // adopts the GitHub repository of its first source folder, when it has one.
+    let changed = false;
+    for (const ws of workspaces) {
+      if (ws.githubRepo) continue;
+      const folder = (ws.source_folders && ws.source_folders[0]) || '';
+      if (!folder) continue;
+      try {
+        const resp = await apiFetch('/api/github/detect?path=' + encodeURIComponent(folder));
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (data && data.repository) { ws.githubRepo = data.repository; changed = true; }
+      } catch (_) { /* backend offline — the binding stays manual */ }
+    }
+    if (changed) { saveWorkspaces(); updateWorkspaceDisplay(); }
   }
 
   function setGithubAccountButton(text, state) {
@@ -3778,6 +4176,120 @@
     }
   }
 
+  function repositoryHint(listEl, text) {
+    listEl.replaceChildren();
+    const hint = document.createElement('span');
+    hint.className = 'settings-hint';
+    hint.textContent = text;
+    listEl.appendChild(hint);
+  }
+
+  // Mirrors fennec-ui::repository::open_repository_dialog: list the signed-in
+  // gh account's repositories, bind one to the workspace, or create a
+  // private one. Binding only writes the workspace record, nothing is pushed.
+  function openRepositoryDialog() {
+    const ws = activeWorkspace();
+    if (!ws) { toast('Select a workspace first.', 'warn'); return; }
+    const dialog = $('repository-dialog');
+    const listEl = $('repository-choice-list');
+    const nameInput = $('repository-new-name');
+    if (!dialog || !listEl) return;
+    if (nameInput) nameInput.value = '';
+    repositoryHint(listEl, 'Loading repositories…');
+    dialog.showModal();
+    apiFetch('/api/github/repositories').then(async (response) => {
+      const data = response.ok ? await response.json() : null;
+      const repositories = (data && data.repositories) || [];
+      if (!repositories.length) {
+        repositoryHint(listEl, 'No GitHub repositories are available. Sign in with gh, or create one below.');
+        return;
+      }
+      listEl.replaceChildren();
+      for (const repository of repositories) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'repository-choice';
+        row.textContent = repository.full_name + ' · ' + (repository.private ? 'Private' : 'Public');
+        if (repository.full_name === ws.githubRepo) row.classList.add('selected');
+        row.addEventListener('click', () => {
+          bindRepository(repository.full_name);
+          dialog.close();
+        });
+        listEl.appendChild(row);
+      }
+    }).catch(() => repositoryHint(listEl, 'Could not reach the coding-agent backend.'));
+  }
+
+  function bindRepository(fullName) {
+    const ws = activeWorkspace();
+    if (!ws) return;
+    ws.githubRepo = fullName;
+    saveWorkspaces();
+    toast('Workspace connected to ' + fullName + '.', 'good');
+  }
+
+  function createRepository() {
+    const nameInput = $('repository-new-name');
+    const dialog = $('repository-dialog');
+    const name = ((nameInput && nameInput.value) || '').trim();
+    if (!name) { toast('Enter a repository name.', 'warn'); return; }
+    if (dialog) dialog.close();
+    toast('Creating GitHub repository…', 'info');
+    apiFetch('/api/github/repositories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, private: true }),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || !data.full_name) {
+        toast((data && data.error) || 'Could not create the repository.', 'warn');
+        return;
+      }
+      bindRepository(data.full_name);
+    }).catch(() => toast('Could not reach the coding-agent backend.', 'warn'));
+  }
+
+  // Inline create from the unbound banner: reads from the banner's input field.
+  function createRepositoryInline() {
+    const nameInput = $('repository-create-name');
+    const name = ((nameInput && nameInput.value) || '').trim();
+    if (!name) { toast('Enter a repository name.', 'warn'); return; }
+    if (nameInput) nameInput.value = '';
+    toast('Creating GitHub repository…', 'info');
+    apiFetch('/api/github/repositories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, private: true }),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || !data.full_name) {
+        toast((data && data.error) || 'Could not create the repository.', 'warn');
+        return;
+      }
+      bindRepository(data.full_name);
+    }).catch(() => toast('Could not reach the coding-agent backend.', 'warn'));
+  }
+
+  // Mirrors the native settings Integrations page: the static Nod bridge card
+  // plus the capability contract the Rust backend serves on /api/capabilities.
+  function refreshCapabilities() {
+    const statusEl = $('capability-status');
+    const featuresEl = $('capability-features');
+    if (!statusEl || !featuresEl) return;
+    const unavailable = () => {
+      statusEl.textContent = 'Backend capabilities are unavailable.';
+      featuresEl.textContent = 'Start fennec-agent to load integration capabilities.';
+    };
+    apiFetch('/api/capabilities')
+      .then(async (response) => (response.ok ? await response.json() : null))
+      .then((contract) => {
+        if (!contract || !contract.backend) { unavailable(); return; }
+        statusEl.textContent = contract.backend + ' ' + contract.version + ' · protocol ' + contract.protocol_version;
+        featuresEl.textContent = (contract.features || []).join(' · ');
+      })
+      .catch(unavailable);
+  }
+
   function setObsidianAccountButton(text, state) {
     const button = $('obsidian-account-button');
     if (!button) return;
@@ -3847,14 +4359,18 @@
 
   // ── Settings dialog wiring ─────────────────────────────────────────────────
   function applyTheme(theme) {
+    // Each theme carries its own `--brand` accent (and with it the icons and
+    // chrome that consume it); fennec-ui/src/theme.rs mirrors this map token
+    // for token. Dark keeps the original terracotta; the others are tuned to
+    // their own ground and still hold white button text.
     const themes = {
-      dark: { bg: '#141414', panel: '#191919', surface: '#1F1F1F', text: '#EDEDED' },
-      light: { bg: '#FFFFFF', panel: '#F5F5F5', surface: '#E8E8E8', text: '#1A1A1A' },
-      ocean: { bg: '#0A1929', panel: '#0D2137', surface: '#132F4C', text: '#E0F2FE' },
-      forest: { bg: '#0F1F0F', panel: '#1A2E1A', surface: '#253D25', text: '#E8F5E9' },
-      sunset: { bg: '#2D1B1B', panel: '#3D2424', surface: '#4D2D2D', text: '#FEE2E2' },
-      lavender: { bg: '#1E1B2E', panel: '#2A2640', surface: '#363252', text: '#EDE9FE' },
-      coffee: { bg: '#1A1410', panel: '#241C14', surface: '#2E2418', text: '#F5E6D3' },
+      dark: { bg: '#141414', panel: '#191919', surface: '#1F1F1F', text: '#EDEDED', brand: '#E9865D' },
+      light: { bg: '#FFFFFF', panel: '#F5F5F5', surface: '#E8E8E8', text: '#1A1A1A', brand: '#C2542A' },
+      ocean: { bg: '#0A1929', panel: '#0D2137', surface: '#132F4C', text: '#E0F2FE', brand: '#1F6FE4' },
+      forest: { bg: '#0F1F0F', panel: '#1A2E1A', surface: '#253D25', text: '#E8F5E9', brand: '#2E9458' },
+      sunset: { bg: '#2D1B1B', panel: '#3D2424', surface: '#4D2D2D', text: '#FEE2E2', brand: '#DC4A38' },
+      lavender: { bg: '#1E1B2E', panel: '#2A2640', surface: '#363252', text: '#EDE9FE', brand: '#8B5CF6' },
+      coffee: { bg: '#1A1410', panel: '#241C14', surface: '#2E2418', text: '#F5E6D3', brand: '#A9713F' },
     };
     const t = themes[theme] || themes.dark;
     const root = document.documentElement;
@@ -3862,6 +4378,7 @@
     root.style.setProperty('--panel', t.panel);
     root.style.setProperty('--surface', t.surface);
     root.style.setProperty('--text', t.text);
+    root.style.setProperty('--brand', t.brand);
     localStorage.setItem('fennec-theme', theme);
   }
 
@@ -3891,16 +4408,13 @@
     });
 
     $('settings-button').addEventListener('click', () => {
-      $('server-url').value = apiBase;
-      $('engine-url').value = readSetting('fennec-engine-url', '');
-      $('access-token').value = readSetting('fennec-access-token', '');
       $('font-size').value = settings.fontSize;
       $('auto-save').checked = settings.autoSave;
       $('notifications').checked = settings.notifications;
       $('debug-mode').checked = settings.debug;
-      $('experimental').checked = settings.experimental;
       refreshGithub();
       refreshObsidian();
+      refreshCapabilities();
       settingsDialog.showModal();
     });
     $('settings-close').addEventListener('click', () => settingsDialog.close());
@@ -3909,6 +4423,7 @@
     $('obsidian-write').addEventListener('click', writeObsidianNote);
     refreshGithub();
     refreshObsidian();
+    refreshCapabilities();
     settingsDialog.addEventListener('click', (e) => {
       if (e.target === settingsDialog) settingsDialog.close();
     });
@@ -3936,38 +4451,6 @@
       });
     });
 
-    // Connection
-    $('save-connection').addEventListener('click', () => {
-      const url = $('server-url').value.trim().replace(/\/+$/, '');
-      const errEl = $('connect-error');
-      if (url && !/^https?:\/\//i.test(url)) {
-        errEl.textContent = 'URL must start with http:// or https://';
-        errEl.hidden = false;
-        return;
-      }
-      errEl.hidden = true;
-      apiBase = url;
-      backendKind = null;
-      localStorage.setItem('fennec-server-url', apiBase);
-      localStorage.setItem('fennec-engine-url', $('engine-url').value.trim());
-      localStorage.setItem('fennec-access-token', $('access-token').value);
-      checkHealth();
-      connectEvents();
-      loadModels();
-      syncBackendRepositories();
-      toast('Connection settings saved.', 'good');
-    });
-    $('disconnect-button').addEventListener('click', () => {
-      apiBase = '';
-      localStorage.removeItem('fennec-server-url');
-      $('server-url').value = '';
-      state.backendConnected = false;
-      updateBackendStatus();
-      checkHealth();
-      connectEvents();
-      toast('Disconnected — using same-origin default.', 'info');
-    });
-
     // Appearance
     $('font-size').addEventListener('change', () => {
       const px = Math.min(24, Math.max(10, parseInt($('font-size').value, 10) || 14));
@@ -3992,10 +4475,6 @@
     $('debug-mode').addEventListener('change', () => {
       settings.debug = $('debug-mode').checked;
       localStorage.setItem('fennec-debug', String(settings.debug));
-    });
-    $('experimental').addEventListener('change', () => {
-      settings.experimental = $('experimental').checked;
-      localStorage.setItem('fennec-experimental', String(settings.experimental));
     });
   }
 
@@ -4031,6 +4510,7 @@
       taskSearch.value = '';
       state.searchQuery = '';
       taskSearch.hidden = true;
+      document.querySelector('[data-nav="search"]').classList.remove('active');
       renderTaskList();
     }
   });
@@ -4047,9 +4527,9 @@
   });
 
   // Dictation (click to start, click again to stop). The clip is posted to
-  // core's /api/stt, which is the only route that starts the faster-whisper
-  // sidecar (`engine.py:ensure_stt`); `stt.py` takes raw audio bytes, so the
-  // blob goes out as its own body with the recorder's mime type.
+  // the backend's /api/stt, which is the only route that starts the
+  // faster-whisper sidecar (`fennec_client::Speech`); `stt.py` takes raw audio
+  // bytes, so the blob goes out as its own body with the recorder's mime type.
   // Browser SpeechRecognition was the old path: it transcribes on Google's
   // servers, which the local-first promise rules out, and its empty onerror
   // made a refused microphone look exactly like a silent one.
@@ -4152,9 +4632,11 @@
     diffDialog.addEventListener('click', (e) => { if (e.target === diffDialog) diffDialog.close(); });
   }
 
-  // Delivered file preview: the FILE section of the right panel, dismissed with ×.
+  // Delivered file preview: modal dialog, dismissed with × or backdrop click.
   const fileViewerClose = $('file-viewer-close');
   if (fileViewerClose) fileViewerClose.addEventListener('click', closeFileViewer);
+  const fileViewerDialog = $('file-viewer-dialog');
+  if (fileViewerDialog) fileViewerDialog.addEventListener('click', (e) => { if (e.target === fileViewerDialog) closeFileViewer(); });
 
   // Workspaces
   const btnAddWorkspace = $('btn-add-workspace');
@@ -4163,8 +4645,28 @@
     btnAddWorkspace.addEventListener('click', openWorkspaceDialog);
   }
 
+  // GitHub repository picker: the banner's icon and the unbound connect action
+  // both open it, so an unbound workspace can reach it too.
+  const changeRepository = $('change-repository');
+  if (changeRepository) changeRepository.addEventListener('click', openRepositoryDialog);
+  const connectRepository = $('connect-repository');
+  if (connectRepository) connectRepository.addEventListener('click', openRepositoryDialog);
+  // Inline create button in the unbound banner: reads from the banner's input.
+  const createInline = $('repository-create-inline');
+  if (createInline) createInline.addEventListener('click', createRepositoryInline);
+  const repositoryDialog = $('repository-dialog');
+  if (repositoryDialog) {
+    $('repository-create').addEventListener('click', createRepository);
+    const closeRepositoryDialog = () => repositoryDialog.close();
+    $('repository-cancel').addEventListener('click', closeRepositoryDialog);
+    $('repository-cancel-x').addEventListener('click', closeRepositoryDialog);
+    repositoryDialog.addEventListener('click', (e) => { if (e.target === repositoryDialog) repositoryDialog.close(); });
+  }
+
   // Settings + theme + font
   initSettings();
+  initPaneResize();
+  initInspectorTabs();
   const savedTheme = readSetting('fennec-theme', 'dark');
   applyTheme(savedTheme);
   const savedThemeItem = document.querySelector(`.theme-item[data-theme="${savedTheme}"]`);
@@ -4197,6 +4699,7 @@
   checkHealth();
   connectEvents();
   syncBackendRepositories();
+  syncWorkspaceRepositories();
 
   setInterval(checkHealth, 30000);
   // The running block carries a timer, so the clock has to be redrawn while the

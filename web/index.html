@@ -39,29 +39,47 @@
 
   <!-- Main three-pane layout -->
   <div class="app-layout" id="app-layout">
+    <!-- Drag strips on the pane borders (see .pane-resizer); keyboard users
+         get the same resize from ArrowLeft/ArrowRight, double-click resets. -->
+    <div class="pane-resizer" id="rail-resizer" data-pane="rail" role="separator"
+         aria-orientation="vertical" aria-label="Resize navigation panel" tabindex="0"></div>
+    <div class="pane-resizer" id="inspector-resizer" data-pane="insp" role="separator"
+         aria-orientation="vertical" aria-label="Resize inspector panel" tabindex="0"></div>
 
     <!-- Left panel: Navigation -->
     <aside class="left-panel" aria-label="Navigation">
-      <div class="workspace-section">
-        <div class="section-label">Working in</div>
+      <!-- GitHub panel: always present, mirroring
+           fennec-ui::repository::working_in_banner. Bound it names the
+           repository; unbound it offers the connect action, which is the
+           picker's only entry point from the rail. -->
+      <div class="workspace-section" id="working-in">
+        <div class="working-in-head">
+          <div class="section-label">Working in</div>
+          <button class="icon-button-small" type="button" id="change-repository" aria-label="Change GitHub repository" title="Change GitHub repository"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3a9 9 0 0 0-2.84 17.54c.45.08.62-.2.62-.43v-1.52c-2.52.55-3.05-1.06-3.05-1.06-.41-1.05-1-1.33-1-1.33-.82-.56.06-.55.06-.55.91.06 1.39.94 1.39.94.8 1.39 2.1.99 2.61.76.08-.59.31-.99.57-1.22-2.01-.23-4.12-1-4.12-4.46 0-.99.35-1.8.93-2.44-.09-.23-.4-1.15.09-2.4 0 0 .76-.24 2.48.93a8.6 8.6 0 0 1 4.52 0c1.72-1.17 2.48-.93 2.48-.93.49 1.25.18 2.17.09 2.4.58.64.93 1.45.93 2.44 0 3.47-2.11 4.23-4.12 4.46.32.28.61.83.61 1.68v2.49c0 .24.16.52.62.43A9 9 0 0 0 12 3Z"/></svg></button>
+        </div>
         <div class="workspace-name" id="workspace-name">fennec</div>
-        <div class="workspace-meta">
-          <span class="branch-name" id="branch-name">main</span>
-          <span>·</span>
-          <span class="version-badge">1.0.0</span>
-          <span>working tree</span>
+        <div id="repository-bound">
+          <div class="repository-name" id="repository-name"></div>
+          <div class="workspace-meta">
+            <span class="branch-name" id="branch-name">main</span>
+            <span>·</span>
+            <span class="version-badge">1.0.0</span>
+            <span>working tree</span>
+          </div>
+        </div>
+        <div class="repository-unbound" id="repository-unbound" hidden>
+          <div class="repository-create-inline">
+            <label class="repository-create-label" for="repository-create-name">Create a private repository</label>
+            <div class="repository-create-row">
+              <input class="repository-create-input" type="text" id="repository-create-name" placeholder="repository-name" autocomplete="off" spellcheck="false">
+              <button class="repository-create-btn" type="button" id="repository-create-inline">Create</button>
+            </div>
+          </div>
+          <button class="connect-repository" type="button" id="connect-repository">Connect existing</button>
         </div>
       </div>
 
       <nav class="nav-section">
-        <button class="nav-item active" data-nav="coding" type="button">
-          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6h12M6 12h12M6 18h12"/></svg></span>
-          <span class="nav-label">Recent tasks</span>
-        </button>
-        <button class="nav-item" data-nav="new-task" type="button">
-          <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg></span>
-          <span class="nav-label">New task</span>
-        </button>
         <button class="nav-item" data-nav="attention" type="button">
           <span class="nav-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
           <span class="nav-label">My attention</span>
@@ -188,99 +206,124 @@
 
     <!-- Right panel: Context Inspector -->
     <aside class="right-panel" id="right-panel" aria-label="Context Inspector">
-      <!-- Delivered file: the card in the timeline opens the file it names here,
-           next to the rest of the run's context, instead of over the app. -->
-      <div class="inspector-section file-viewer" id="file-viewer" hidden>
-        <div class="inspector-section-header">
-          <span>File</span>
-          <button class="icon-button" type="button" aria-label="Close file" id="file-viewer-close">×</button>
-        </div>
-        <div class="file-viewer-name" id="file-viewer-name"></div>
-        <div class="file-path mono muted" id="file-viewer-path"></div>
-        <div class="file-viewer-meta muted" id="file-viewer-meta"></div>
-        <pre class="file-viewer-body mono" id="file-viewer-body"></pre>
+      <!-- One pane at a time: the run's context, the workspace file manager,
+           and the plain-text web reader. Tabs and views are wired in app.js. -->
+      <div class="insp-tabs" role="tablist" aria-label="Inspector views">
+        <button class="insp-tab active" id="insp-tab-overview" type="button" role="tab" aria-selected="true" aria-controls="insp-view-overview">Overview</button>
+        <button class="insp-tab" id="insp-tab-files" type="button" role="tab" aria-selected="false" aria-controls="insp-view-files">Files</button>
+        <button class="insp-tab" id="insp-tab-browser" type="button" role="tab" aria-selected="false" aria-controls="insp-view-browser">Browser</button>
       </div>
 
-      <!-- Active Agents -->
-      <div class="inspector-section">
-        <div class="inspector-section-header">
-          <span>Working now</span>
-          <span class="section-count" id="agent-count">0 online</span>
+      <div class="insp-view" id="insp-view-overview" role="tabpanel" aria-labelledby="insp-tab-overview">
+        <!-- Active Agents -->
+        <div class="inspector-section">
+          <div class="inspector-section-header">
+            <span>Working now</span>
+            <span class="section-count" id="agent-count">0 online</span>
+          </div>
+          <div id="agent-list">
+            <!-- Rendered by app.js -->
+          </div>
         </div>
-        <div id="agent-list">
-          <!-- Rendered by app.js -->
+
+        <!-- Workspace Context -->
+        <div class="inspector-section">
+          <div class="inspector-section-header">
+            <span>At a glance</span>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3.5 19a4.5 4.5 0 0 1 9 0M14 18a4 4 0 0 1 6.5-3.1"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Subagents</div>
+              <div class="context-value muted" id="subagents-value">No active delegated agents</div>
+            </div>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Processes</div>
+              <div class="context-value muted" id="processes-value">Event stream idle</div>
+            </div>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="m14 6 4 4M5 19l6.5-6.5M13 7a4 4 0 0 0 5 5l-7 7H6v-5l7-7Z"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Skills</div>
+              <div class="context-value muted" id="skills-value">No tool activity yet</div>
+            </div>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Artifacts</div>
+              <div class="context-value muted" id="artifact-count">0 task artifacts</div>
+            </div>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Web readings</div>
+              <div class="context-value muted" id="webreadings-value">No linked readings</div>
+            </div>
+          </div>
+          <div class="context-item">
+            <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 6h12M6 12h12M6 18h8"/><circle cx="4" cy="6" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="18" r=".7" fill="currentColor"/></svg></span>
+            <div class="context-info">
+              <div class="context-label">Sources</div>
+              <div class="context-value muted" id="sources-value">No task sources</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Environment -->
+        <div class="inspector-section">
+          <div class="inspector-section-header">
+            <span>Environment</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">Repository</span>
+            <span class="env-value" id="env-repo">fennec</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">Branch</span>
+            <span class="env-value" id="env-branch">main</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">Backend</span>
+            <span class="env-value ok" id="env-backend">Connected</span>
+          </div>
+          <!-- One row per browser outlet /api/outlets reported, in core's order.
+               Built by app.js because the set is the server's, not this file's. -->
+          <div id="env-outlets"></div>
         </div>
       </div>
 
-      <!-- Workspace Context -->
-      <div class="inspector-section">
-        <div class="inspector-section-header">
-          <span>At a glance</span>
+      <!-- Files: the same jail the run works in, browsed. The delivered-file
+           card in the timeline opens its file here, next to the folder it
+           lives in, instead of over the app. -->
+      <div class="insp-view" id="insp-view-files" role="tabpanel" aria-labelledby="insp-tab-files" hidden>
+        <div class="fm-bar">
+          <button class="icon-button" type="button" id="fm-up" aria-label="Up one folder" title="Up one folder">↑</button>
+          <span class="fm-path mono" id="fm-path" title="">.</span>
+          <button class="icon-button" type="button" id="fm-refresh" aria-label="Refresh listing" title="Refresh listing">⟳</button>
         </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8-1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3.5 19a4.5 4.5 0 0 1 9 0M14 18a4 4 0 0 1 6.5-3.1"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Subagents</div>
-            <div class="context-value muted" id="subagents-value">No active delegated agents</div>
-          </div>
-        </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Processes</div>
-            <div class="context-value muted" id="processes-value">Event stream idle</div>
-          </div>
-        </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="m14 6 4 4M5 19l6.5-6.5M13 7a4 4 0 0 0 5 5l-7 7H6v-5l7-7Z"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Skills</div>
-            <div class="context-value muted" id="skills-value">No tool activity yet</div>
-          </div>
-        </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Artifacts</div>
-            <div class="context-value muted" id="artifact-count">0 task artifacts</div>
-          </div>
-        </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Web readings</div>
-            <div class="context-value muted" id="webreadings-value">No linked readings</div>
-          </div>
-        </div>
-        <div class="context-item">
-          <span class="context-icon" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M6 6h12M6 12h12M6 18h8"/><circle cx="4" cy="6" r=".7" fill="currentColor"/><circle cx="4" cy="12" r=".7" fill="currentColor"/><circle cx="4" cy="18" r=".7" fill="currentColor"/></svg></span>
-          <div class="context-info">
-            <div class="context-label">Sources</div>
-            <div class="context-value muted" id="sources-value">No task sources</div>
-          </div>
-        </div>
+        <div class="fm-list" id="fm-list" role="list"></div>
+        <div class="fm-note muted" id="fm-note" hidden></div>
       </div>
 
-      <!-- Environment -->
-      <div class="inspector-section">
-        <div class="inspector-section-header">
-          <span>Environment</span>
-        </div>
-        <div class="env-row">
-          <span class="env-key">Repository</span>
-          <span class="env-value" id="env-repo">fennec</span>
-        </div>
-        <div class="env-row">
-          <span class="env-key">Branch</span>
-          <span class="env-value" id="env-branch">main</span>
-        </div>
-        <div class="env-row">
-          <span class="env-key">Backend</span>
-          <span class="env-value ok" id="env-backend">Connected</span>
-        </div>
-        <!-- One row per browser outlet /api/outlets reported, in core's order.
-             Built by app.js because the set is the server's, not this file's. -->
-        <div id="env-outlets"></div>
+      <!-- Browser: reads one http(s) page graphically. The Rust backend
+           fetches it and serves the markup to the sandboxed frame below, so
+           the site paints its own CSS and images while its links and forms
+           keep navigating inside this pane. No webview, no Node. -->
+      <div class="insp-view" id="insp-view-browser" role="tabpanel" aria-labelledby="insp-tab-browser" hidden>
+        <form class="br-bar" id="browser-form">
+          <button class="icon-button" type="button" id="br-back" aria-label="Back" title="Back">&#8592;</button>
+          <input class="br-url" id="browser-url" type="text" placeholder="Read a web page…" autocomplete="off" spellcheck="false" aria-label="Web address">
+          <button class="br-go" id="browser-go" type="submit" aria-label="Read page">Go</button>
+        </form>
+        <div class="br-title" id="browser-title" hidden></div>
+        <div class="br-meta muted mono" id="browser-meta" hidden></div>
+        <iframe class="br-frame" id="browser-frame" sandbox="allow-scripts allow-forms" title="Web page" hidden></iframe>
       </div>
 
     </aside>
@@ -296,39 +339,15 @@
     <div class="settings-layout">
       <!-- Vertical tabs -->
       <nav class="settings-tabs">
-        <button class="settings-tab active" data-tab="connection" type="button">Connection</button>
-        <button class="settings-tab" data-tab="appearance" type="button">Appearance</button>
+        <button class="settings-tab active" data-tab="appearance" type="button">Appearance</button>
         <button class="settings-tab" data-tab="github" type="button">GitHub</button>
         <button class="settings-tab" data-tab="obsidian" type="button">Obsidian</button>
         <button class="settings-tab" data-tab="behavior" type="button">Behavior</button>
         <button class="settings-tab" data-tab="advanced" type="button">Advanced</button>
+        <button class="settings-tab" data-tab="integrations" type="button">Integrations</button>
       </nav>
       <!-- Tab content -->
       <div class="settings-content">
-        <!-- Connection tab -->
-        <div class="settings-panel active" id="panel-connection">
-          <h3>Connection</h3>
-          <div class="settings-card">
-            <label for="server-url">Backend Server URL</label>
-            <input id="server-url" type="text" placeholder="http://127.0.0.1:8787" autocomplete="off">
-            <span class="settings-hint">Coding agent backend (tasks, events, agents). Default: http://127.0.0.1:8787</span>
-          </div>
-          <div class="settings-card">
-            <label for="engine-url">Engine URL</label>
-            <input id="engine-url" type="text" placeholder="http://127.0.0.1:8184" autocomplete="off">
-            <span class="settings-hint">Fennec inference engine. Default: http://127.0.0.1:8184</span>
-          </div>
-          <div class="settings-card">
-            <label for="access-token">API Key</label>
-            <input id="access-token" type="password" placeholder="local" autocomplete="off">
-            <span class="settings-hint">Authentication key for engine access. Default: local</span>
-          </div>
-          <div class="button-row">
-            <button class="primary-button" type="button" id="save-connection">Save</button>
-            <button class="quiet-button" type="button" id="disconnect-button">Disconnect</button>
-          </div>
-          <p id="connect-error" class="error-text" role="alert" hidden></p>
-        </div>
         <!-- GitHub tab -->
         <div class="settings-panel" id="panel-github">
           <h3>GitHub</h3>
@@ -373,7 +392,7 @@
           </div>
         </div>
         <!-- Appearance tab -->
-        <div class="settings-panel" id="panel-appearance">
+        <div class="settings-panel active" id="panel-appearance">
           <h3>Appearance</h3>
           <div class="settings-card">
             <label>Theme</label>
@@ -433,9 +452,19 @@
             <label class="check-row"><input id="debug-mode" type="checkbox"> Debug mode</label>
             <span class="settings-hint">Show detailed logs and diagnostics</span>
           </div>
+        </div>
+        <!-- Integrations tab (mirrors the native settings Integrations page) -->
+        <div class="settings-panel" id="panel-integrations">
+          <h3>Integrations</h3>
           <div class="settings-card">
-            <label class="check-row"><input id="experimental" type="checkbox"> Experimental features</label>
-            <span class="settings-hint">Enable unstable features for testing</span>
+            <label>Nod / n8n bridge</label>
+            <div class="integration-ready">Native Rust stdio MCP server: fennec-nod</div>
+            <span class="settings-hint">Connect n8n or another MCP host to the local Fennec tools without Node.js or stored credentials.</span>
+          </div>
+          <div class="settings-card">
+            <label>Backend capability contract</label>
+            <div id="capability-status" class="github-status">Backend capabilities are unavailable.</div>
+            <span class="settings-hint" id="capability-features">Start fennec-agent to load integration capabilities.</span>
           </div>
         </div>
       </div>
@@ -491,6 +520,28 @@
     </div>
   </dialog>
 
+  <!-- GitHub repository picker (mirrors fennec-ui::repository::open_repository_dialog) -->
+  <dialog id="repository-dialog" aria-labelledby="repository-dialog-title">
+    <div class="dialog-header">
+      <h2 id="repository-dialog-title">GitHub repository</h2>
+      <button class="icon-button" type="button" id="repository-cancel-x" aria-label="Close">×</button>
+    </div>
+    <div class="dialog-body repository-dialog-body">
+      <p class="settings-hint">Change the repository connected to this workspace.</p>
+      <div id="repository-choice-list" class="repository-choice-list">
+        <span class="settings-hint">Loading repositories…</span>
+      </div>
+      <span class="ws-field-label">Create a private repository</span>
+      <div class="repository-create-row">
+        <input type="text" id="repository-new-name" class="ws-name-input" placeholder="my-project" autocomplete="off">
+        <button class="button primary" type="button" id="repository-create">Create</button>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button class="button ghost" type="button" id="repository-cancel">Cancel</button>
+    </div>
+  </dialog>
+
   <!-- Diff review dialog -->
   <dialog id="diff-dialog" aria-labelledby="diff-title">
     <div class="dialog-header">
@@ -502,6 +553,18 @@
       <span><span id="diff-add" style="color:var(--ok)"></span> <span id="diff-del" style="color:var(--err)"></span></span>
     </div>
     <pre id="diff-body" class="diff-body mono"></pre>
+  </dialog>
+
+  <!-- File preview dialog -->
+  <dialog id="file-viewer-dialog" aria-labelledby="file-viewer-title">
+    <div class="dialog-header">
+      <h2 id="file-viewer-title" class="file-viewer-name" style="margin:0;font-size:14px;font-weight:600;"></h2>
+      <button class="icon-button" type="button" aria-label="Close file" id="file-viewer-close">×</button>
+    </div>
+    <div class="file-viewer-path mono muted" id="file-viewer-path" style="font-size:12px;margin:4px 0 8px;"></div>
+    <div class="file-viewer-meta muted" id="file-viewer-meta" style="font-size:11px;margin-bottom:12px;"></div>
+    <img class="file-viewer-image" id="file-viewer-image" alt="" hidden style="max-width:100%;max-height:60vh;object-fit:contain;" />
+    <pre class="file-viewer-body mono" id="file-viewer-body" style="max-height:60vh;overflow:auto;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm,6px);padding:12px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;"></pre>
   </dialog>
 
   <!-- Destructive-action confirmation (mirrors the native gpui dialog) -->

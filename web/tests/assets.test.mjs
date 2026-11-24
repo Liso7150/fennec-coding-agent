@@ -125,6 +125,94 @@ test('GitHub settings exposes read-only account and repository integration', () 
   assert.doesNotMatch(APP, /github-token|github-access-token/i, 'GitHub tokens must not be stored by the PWA');
 });
 
+test('the Working in panel shows on every workspace, like the native shell', () => {
+  // fennec-ui::repository::working_in_banner always renders: bound it names the
+  // repository, unbound it carries the connect action, which is the picker's
+  // only entry point from the rail. A panel hidden until a repository is
+  // already bound could never be bound from the rail at all.
+  assert.doesNotMatch(HTML, /id="working-in"[^>]*hidden/);
+  assert.match(HTML, /id="change-repository"/);
+  assert.match(HTML, /id="repository-name"/);
+  assert.match(HTML, /id="repository-bound"/);
+  assert.match(HTML, /id="repository-unbound" hidden/);
+  assert.match(HTML, /id="connect-repository"/);
+  // The unbound state names both ways out of itself: create a repository inline,
+  // or connect one that already exists.
+  assert.match(HTML, /id="repository-create-name"/);
+  assert.match(HTML, />Connect existing</);
+  assert.match(APP, /boundEl\.hidden = !bound/);
+  assert.match(APP, /unboundEl\.hidden = bound/);
+  assert.match(APP, /ws\.githubRepo/);
+  assert.match(APP, /if \(connectRepository\) connectRepository\.addEventListener\('click', openRepositoryDialog\)/);
+});
+
+test('the repository picker binds a repository or creates a private one', () => {
+  assert.match(HTML, /id="repository-dialog"/);
+  assert.match(HTML, /id="repository-choice-list"/);
+  assert.match(HTML, /id="repository-create"/);
+  assert.match(APP, /function openRepositoryDialog\(\)/);
+  assert.match(APP, /No GitHub repositories are available\. Sign in with gh, or create one below\./);
+  assert.match(APP, /method: 'POST'/);
+  assert.match(APP, /private: true/);
+});
+
+test('unbound workspaces adopt the repository of their first source folder', () => {
+  // Mirrors fennec-desktop's sync_workspace_github_repos: the Rust backend
+  // resolves the folder's git remote through fennec_client::git, so the
+  // banner-bootstrap is identical on both surfaces.
+  assert.match(APP, /function syncWorkspaceRepositories\(\)/);
+  assert.match(APP, /\/api\/github\/detect\?path=/);
+  assert.match(APP, /if \(ws\.githubRepo\) continue;/);
+  assert.match(APP, /syncBackendRepositories\(\);\n  syncWorkspaceRepositories\(\);/);
+});
+
+test('the download row keeps its icon inside the shared ui-icon box', () => {
+  // iconSvg's second argument replaces the whole class list. Passing only the
+  // row-specific class dropped the 16px sizing and stroke from .ui-icon, and
+  // the browser-default 300x150 svg stretched the dropdown until the flex:1
+  // name span collapsed to one character per line.
+  const dd = slice(APP, 'function renderModelDropdown()', '\n  }\n');
+  assert.match(dd, /iconSvg\('download', 'ui-icon model-download-icon'\)/);
+  const css = read('styles.css');
+  assert.match(css, /\.model-download-icon\s*\{[^}]*flex-shrink: 0/, 'the icon must not be squeezed by its row');
+});
+
+test('the rail carries only the native filter toggles, with the GitHub chip', () => {
+  // The native left rail (fennec-desktop gui_main::left) offers My attention
+  // and Search; new tasks come from a workspace row's + or the composer. The
+  // GitHub control is the account chip at the rail's foot, as it is natively.
+  const nav = slice(HTML, '<nav class="nav-section">', '</nav>');
+  assert.doesNotMatch(nav, /data-nav="coding"|data-nav="new-task"/, 'Recent tasks and New task are not rail entries on the native surface');
+  assert.match(nav, /data-nav="attention"/);
+  assert.match(nav, /data-nav="search"/);
+  assert.match(HTML, /id="github-account-button"/);
+  assert.match(APP, /document\.querySelector\('\[data-nav="attention"\]'\)\.classList\.toggle\('active', state\.attentionOnly\)/, 'the highlight follows the persisted filter, not the click');
+});
+
+test('settings expose the Integrations tab with the capability contract', () => {
+  assert.match(HTML, /data-tab="integrations"/);
+  assert.match(HTML, /id="panel-integrations"/);
+  assert.match(HTML, /Native Rust stdio MCP server: fennec-nod/);
+  assert.match(HTML, /Backend capabilities are unavailable\./);
+  assert.match(APP, /apiFetch\('\/api\/capabilities'\)/);
+  assert.match(APP, /· protocol /);
+  assert.match(APP, /Start fennec-agent to load integration capabilities\./);
+});
+
+test('the PWA has no Connection tab; same-origin is the only backend', () => {
+  // The native shell (fennec-desktop gui_main settings-save) keeps a Connection
+  // tab because it is a separate client that must find the backend and engine.
+  // The PWA is served by that Rust backend, so the page cannot mis-configure
+  // its way to another one; the old Engine URL and API Key fields were
+  // localStorage writes with no readers, and the server URL override predates
+  // the Rust backend being canonical.
+  assert.doesNotMatch(HTML, /data-tab="connection"|id="panel-connection"/);
+  assert.doesNotMatch(HTML, /id="server-url"|id="engine-url"|id="access-token"|id="save-connection"|id="disconnect-button"/);
+  assert.match(HTML, /<button class="settings-tab active" data-tab="appearance"/, 'Appearance is the default tab now');
+  assert.doesNotMatch(APP, /fennec-server-url|fennec-engine-url|fennec-access-token/, 'no dead connection settings may be stored');
+  assert.match(APP, /const apiBase = '';/, 'api calls are pinned to the serving origin');
+});
+
 test('workspace rows expose an isolated add-task action', () => {
   const render = slice(APP, 'function renderWorkspaces()', '\n  }\n\n  // ── Workspace creation dialog');
   assert.match(render, /class="workspace-new-task"/);
@@ -271,6 +359,16 @@ test('the outlet rows read as the native client reads them', (t) => {
   for (const [name, src] of [['egui', egui], ['gpui', gpui]]) {
     assert.match(src, /\boutlet_rows\(/, `the ${name} rail never asks the client for its rows`);
   }
+  // And each rail must ask on *any* reply from the loop. Keying the probe to the
+  // legacy payload's `app` field read a healthy Rust backend — which serves
+  // /api/outlets and identifies itself by `backend` — as "agent loop offline",
+  // which is what the gpui shell and the PWA both did until 2026-11-23.
+  assert.match(gpui, /if core_up \|\| axum \{ core\.outlets\(\) \}/,
+    'the gpui rail gates the outlets probe on the legacy health payload');
+  assert.match(egui, /core0\.health\(\)[\s\S]{0,400}?core0\.outlets\(\)/,
+    'the egui rail no longer probes outlets off the loop reply');
+  assert.match(APP, /state\.backendConnected \? await loadOutlets\(\)/,
+    'the PWA gates the outlets probe on the legacy health payload');
   // The pair is what the rail is keyed by, so a row that core no longer answers for
   // has to be deleted here too, not just left to render an empty line. The pattern
   // stays off a line anchor: two fields in one struct literal can split across
@@ -351,4 +449,305 @@ test('the queue keeps two compact rows visible and protects agent work', () => {
   assert.match(render, /data-action="remove"/);
   assert.match(render, /isAgentQueueItem\(item\)\) return/);
   assert.match(APP, /return entries\.filter\(\(item\) => item\.owner === 'ai'\)\.concat/);
+});
+
+test('each theme carries its own accent on both surfaces', () => {
+  // The PWA kept one terracotta --brand across every theme; applyTheme now sets
+  // --brand per theme, and the translucent derivatives mix from var(--brand) so
+  // icons and accent chrome follow. fennec-ui/src/theme.rs mirrors the same map
+  // token for token, so the native gpui shell paints the same seven accents
+  // through t.accent.
+  const apply = slice(APP, 'function applyTheme(theme)', '\n  }\n');
+  const brands = {
+    dark: '#E9865D', light: '#C2542A', ocean: '#1F6FE4', forest: '#2E9458',
+    sunset: '#DC4A38', lavender: '#8B5CF6', coffee: '#A9713F',
+  };
+  for (const [theme, brand] of Object.entries(brands)) {
+    assert.match(apply, new RegExp(`${theme}: \{[^}]*brand: '${brand}'`), `${theme} must ship accent ${brand}`);
+  }
+  assert.match(apply, /setProperty\('--brand', t\.brand\)/);
+
+  const css = read('styles.css');
+  assert.doesNotMatch(css, /rgba\(233, 134, 93/, 'the terracotta alpha literals must not come back');
+  for (const token of ['--brand-dim', '--brand-bg', '--user-bg']) {
+    const at = css.indexOf(token);
+    assert.notEqual(at, -1, `${token} is gone`);
+    assert.match(css.slice(at, at + 80), /color-mix\(in srgb, var\(--brand\)/, `${token} must derive from --brand`);
+  }
+
+  const native = readSibling('fennec-ui/src/theme.rs');
+  if (!native) {
+    console.log('skipped native accent parity: no fennec-ui sibling to read');
+    return;
+  }
+  assert.doesNotMatch(native, /accent: ACCENT,/, 'the shared one-accent constant must stay gone');
+  for (const theme of Object.keys(brands)) {
+    assert.match(native, new RegExp(`accent: ACCENT_${theme.toUpperCase()},`), `${theme} preset must use its own accent const`);
+    assert.ok(native.includes(brands[theme]), `the native comments must name ${brands[theme]}`);
+  }
+});
+
+test('both side panes are draggable and the width survives reload', () => {
+  const css = read('styles.css');
+  // The shell ships one handle per pane, focusable, inside .app-layout.
+  for (const pane of ['rail', 'insp']) {
+    const at = HTML.indexOf(`data-pane="${pane}"`);
+    assert.notEqual(at, -1, `the ${pane} resizer is gone from the shell`);
+    const tag = HTML.slice(HTML.lastIndexOf('<div', at), HTML.indexOf('>', at) + 1);
+    assert.match(tag, /class="pane-resizer"/);
+    assert.match(tag, /role="separator"\s+aria-orientation="vertical"/);
+    assert.match(tag, /tabindex="0"/);
+  }
+  // The grid must read the same two variables app.js writes inline, and each
+  // handle must sit on its pane border by the same variable.
+  const layout = css.slice(css.indexOf('.app-layout {'), css.indexOf('.pane-resizer {'));
+  assert.match(layout, /--rail-w: \d+px/);
+  assert.match(layout, /--insp-w: \d+px/);
+  assert.match(layout, /grid-template-columns: var\(--rail-w\) 1fr var\(--insp-w\)/);
+  assert.match(css, /#rail-resizer \{ left: calc\(var\(--rail-w\) - 3px\)/);
+  assert.match(css, /#inspector-resizer \{ right: calc\(var\(--insp-w\) - 3px\)/);
+  assert.match(css, /\.app-layout\.inspector-closed #inspector-resizer \{ display: none/);
+  // The narrow tier keeps both handles live: the rail stays a variable
+  // column, and the floating inspector and its handle both read --insp-w.
+  const narrow = css.slice(css.indexOf('@media (max-width: 1100px)'));
+  const tier = narrow.slice(0, narrow.indexOf('@media', 1));
+  assert.doesNotMatch(tier, /\.pane-resizer \{ display: none/);
+  assert.match(tier, /grid-template-columns: var\(--rail-w\) 1fr/);
+  assert.match(tier, /--inspector-w: min\(var\(--insp-w\), 88vw\)/);
+  assert.match(tier, /#inspector-resizer \{ right: calc\(var\(--inspector-w\) - 3px\)/);
+  // Mobile drops the rail outright, so only its handle goes with it.
+  const mobile = css.slice(css.indexOf('@media (max-width: 700px)'));
+  assert.match(mobile, /#rail-resizer \{ display: none/);
+
+  const init = slice(APP, 'function initPaneResize()', '\n  }\n');
+  assert.match(APP, /^\s+initPaneResize\(\);$/m, 'boot never calls it');
+  assert.match(init, /'fennec-pane-widths'/, 'widths must survive reload');
+  assert.match(init, /setProperty\(varName\(pane\)/, 'the width is written as the grid variable');
+  assert.match(init, /addEventListener\('pointerdown'/);
+  assert.match(init, /window\.addEventListener\('pointermove'/, 'tracking must survive the pointer leaving the strip');
+  assert.match(init, /pane === 'rail' \? dx : -dx/, 'the inspector grows leftward');
+  assert.match(init, /Math\.min\(hi, Math\.max\(lo, w\)\)/, 'both ends are clamped');
+  assert.match(init, /addEventListener\('dblclick'/, 'double-click hands back the default width');
+  assert.match(init, /ArrowLeft' && e\.key !== 'ArrowRight'/);
+});
+
+test('the inspector runs as three tabs, each with its own panel', () => {
+  const panel = slice(HTML, '<aside class="right-panel"', '</aside>');
+  const tabs = slice(panel, '<div class="insp-tabs"', '</div>');
+  assert.match(tabs, /role="tablist"/);
+  for (const name of ['overview', 'files', 'browser']) {
+    assert.match(tabs, new RegExp(`id="insp-tab-${name}" type="button" role="tab"`));
+    assert.match(tabs, new RegExp(`id="insp-tab-${name}"[^>]*aria-controls="insp-view-${name}"`));
+    assert.match(panel, new RegExp(`id="insp-view-${name}" role="tabpanel" aria-labelledby="insp-tab-${name}"`));
+  }
+  // Only Overview is visible at rest; the other two are hidden until picked.
+  assert.doesNotMatch(panel, /id="insp-view-overview"[^>]*hidden/);
+  assert.match(panel, /id="insp-view-files"[^>]*hidden/);
+  assert.match(panel, /id="insp-view-browser"[^>]*hidden/);
+
+  // The Files pane is the bar, the list and a note slot.
+  const files = slice(panel, 'id="insp-view-files"', 'id="insp-view-browser"');
+  for (const id of ['fm-up', 'fm-path', 'fm-refresh', 'fm-list', 'fm-note']) {
+    assert.match(files, new RegExp(`id="${id}"`), `the Files bar lost #${id}`);
+  }
+  // The reader is a dialog rather than a strip inside the pane: showing it reveals
+  // the file from anywhere in a long listing, which is the whole point of the click.
+  const viewer = slice(HTML, '<dialog id="file-viewer-dialog"', '</dialog>');
+  for (const id of ['file-viewer-close', 'file-viewer-title', 'file-viewer-path', 'file-viewer-meta', 'file-viewer-body', 'file-viewer-image']) {
+    assert.match(viewer, new RegExp(`id="${id}"`), `the file viewer lost #${id}`);
+  }
+  // Two bodies, one shown: the route answers text with `content` and an image
+  // with base64 bytes, and at rest the page has no bitmap to paint.
+  assert.match(viewer, /<img class="file-viewer-image" id="file-viewer-image"[^>]*hidden/);
+  assert.doesNotMatch(viewer, /id="file-viewer-body"[^>]*hidden/);
+
+  const browser = slice(panel, 'id="insp-view-browser"', '</aside>');
+  for (const id of ['browser-form', 'browser-url', 'browser-go', 'br-back', 'browser-title', 'browser-meta', 'browser-frame']) {
+    assert.match(browser, new RegExp(`id="${id}"`), `the Browser pane lost #${id}`);
+  }
+  assert.match(browser, /<form class="br-bar"[^>]*>/);
+  assert.match(browser, /type="submit"/);
+  // The frame may run the page's scripts and submit its forms, but shares no
+  // origin with the app: the site can paint itself, it cannot touch the pane
+  // that shows it. `allow-modals` stays off on purpose — a page's `alert()`
+  // blocks the renderer every tab in this window shares.
+  assert.match(browser, /<iframe[^>]*id="browser-frame"[^>]*sandbox="allow-scripts allow-forms"/);
+  assert.doesNotMatch(
+    browser,
+    /allow-same-origin|allow-modals|allow-popups|allow-top-navigation/,
+    'the reader jail has a door too many open',
+  );
+
+  const css = read('styles.css');
+  for (const rule of ['.insp-tabs {', '.insp-tab.active {', '.fm-row {', '.br-bar {', '.br-frame {']) {
+    assert.ok(css.includes(rule), `styles.css no longer styles ${rule}`);
+  }
+});
+
+test('tab switching, the file manager and the reader are wired in app.js', () => {
+  assert.match(APP, /const INSP_TABS = \['overview', 'files', 'browser'\]/);
+  const setTab = slice(APP, 'function setInspTab(', '\n  }\n');
+  assert.match(setTab, /localStorage\.setItem\('fennec-insp-tab', inspTab\)/, 'the opened tab must survive reload');
+  assert.match(setTab, /setAttribute\('aria-selected'/);
+  assert.match(setTab, /view\.hidden = tab !== inspTab/);
+  assert.match(setTab, /if \(inspTab === 'files' && !fmState\.loaded\) loadFmDir\(fmState\.path\)/);
+
+  const load = slice(APP, 'async function loadFmDir(', 'function fmUp()');
+  assert.match(load, /seq !== fmSeq/, 'a slow listing must not land on top of a newer one');
+  assert.match(load, /apiFetch\('\/api\/work\/files\?path=' \+ encodeURIComponent/);
+  assert.match(load, /Number\(!!b\.is_dir\) - Number\(!!a\.is_dir\)/, 'directories sort before files');
+
+  const open = slice(APP, 'async function openFmFile(', '\n  }\n');
+  assert.match(open, /\+\+fileViewSeq/, 'the viewer shares one race guard with delivered cards');
+  assert.match(open, /apiFetch\('\/api\/work\/file\?path=' \+ encodeURIComponent/);
+  assert.match(open, /if \(!dialog\.open\) dialog\.showModal\(\)/, 'a click far down a folder must reveal the file it opened');
+
+  const nav = slice(APP, 'function brNavigate(', '\n  }\n');
+  assert.match(nav, /frame\.src = '\/browse\/doc\?u=' \+ encodeURIComponent/, 'the frame must load the Rust reader document');
+  assert.match(nav, /brHist\.push\(url\)/, 'the pane keeps no back history');
+  const back = slice(APP, 'function brBack(', '\n  }\n');
+  assert.match(back, /brHist\.pop\(\)/);
+  const listen = slice(APP, 'function initBrowserFrame(', '\n  }\n');
+  assert.match(listen, /event\.source !== frame\.contentWindow/, 'anything but the viewer frame could ask for a navigation');
+  assert.match(listen, /fennecBrowseGo/);
+  assert.match(listen, /fennecBrowseRead/);
+  assert.match(listen, /data\.fennecBrowseErr/, 'a form the pane cannot carry stops without a word');
+  assert.match(listen, /\/\^https\?:\/i\.test\(target\)/, 'the frame cannot send the reader to another scheme');
+  // The strip says what the reader actually fetched, from the frame's own
+  // report: the page's title, and the address plus status behind it.
+  const report = slice(APP, 'const read = data.fennecBrowseRead;', 'function initInspectorTabs(');
+  assert.match(report, /titleEl\.textContent = read\.title/, 'the pane lost the page title');
+  assert.match(report, /metaEl\.textContent = read\.status \+ ' · ' \+ read\.url/);
+  assert.match(report, /read\.truncated/, 'a clipped read has to say so');
+
+  // A page can drive the pane by itself — a form it submits as it boots, a
+  // `location` it writes — and each hop is another read of a real site.
+  // Measured on a Google results page: nine reads in nine seconds, none of
+  // them asked for. The pane follows, but only so far, and it says so.
+  const stop = slice(APP, 'function brStopAuto(', '\n  }\n');
+  assert.match(stop, /frame\.src = 'about:blank'/, 'stopping a looping page leaves it loaded');
+  assert.match(stop, /kept navigating on its own/);
+  assert.match(APP, /const brAutoMax = 3;/);
+  assert.match(nav, /brAuto = auto \? brAuto \+ 1 : 0;/, 'a hop the user asked for must clear the count');
+  assert.match(nav, /if \(brAuto >= brAutoMax\) \{/);
+  assert.match(listen, /brNavigate\(target, true, !!data\.fennecBrowseAuto\)/,
+    'a page-driven hop is no longer told from a link the user clicked');
+  assert.match(report, /if \(!brAsked\) \{/, 'a read the pane never asked for stops counting as the page');
+
+  // A delivered card opens the same dialog a Files row does — one viewer for both
+  // ways a file gets opened, and a modal needs no tab to reveal itself in.
+  const delivered = slice(APP, 'async function openDeliveredFile(', '\n  }\n');
+  assert.match(delivered, /\$\('file-viewer-dialog'\)/);
+  assert.match(delivered, /if \(!dialog\.open\) dialog\.showModal\(\)/);
+
+  assert.match(APP, /function initInspectorTabs\(\)/);
+  assert.match(APP, /^\s+initInspectorTabs\(\);$/m, 'boot never calls it');
+  assert.match(APP, /setInspTab\(readSetting\('fennec-insp-tab', 'overview'\)\)/);
+});
+
+test('the reader hands a page back the tools its frame denies', () => {
+  const work = readSibling('fennec-coding-agent/src/work.rs');
+  assert.ok(work, 'work.rs vanished');
+  const shim = slice(work, 'const BROWSE_SHIM', '"##;');
+  // Measured in the pane: these throw on first touch, which stops a site's boot
+  // script before it paints. Each gets an in-memory stand-in for one read.
+  assert.ok(shim.includes('fix("localStorage")'), 'localStorage lost its bag');
+  assert.ok(shim.includes('fix("sessionStorage")'), 'sessionStorage lost its bag');
+  assert.ok(shim.includes('defineProperty(document,"cookie"'), 'document.cookie lost its jar');
+  assert.ok(shim.includes('defineProperty(navigator,"serviceWorker"'), 'a refused worker must not throw at boot');
+  // IndexedDB is the one whose getter answers happily and whose `open` refuses,
+  // and the sandboxed frame reports the origin of the URL it was read from, so
+  // the shim cannot tell the two cases from outside. It asks the native instead:
+  // the page's own call reaches the real factory first, and the standing-in
+  // request answers only when that one throws. A working IndexedDB stays.
+  assert.ok(shim.includes('open:function(){try{return IO.apply(NIDB,arguments)}catch(e){return freq()}}'),
+    'the IndexedDB stub stopped deferring to the native');
+  assert.ok(shim.includes('return IDP.apply(NIDB,arguments).catch(function(){return[]})'),
+    'databases() refuses asynchronously, so its stand-in has to catch that too');
+  // Measured in the pane: a fetch or XHR to a host other than the one that
+  // served the markup died as `TypeError: Failed to fetch` / `status=0`, because
+  // an opaque origin has no origin a server can allow. So every http(s) target
+  // goes to the relay; only a `data:`/`blob:` target and the relay's own address
+  // keep theirs (rewriting that asks the reader for its own port, which its
+  // private-address gate refuses — measured: 403, 61 bytes).
+  assert.ok(shim.includes('if(t.protocol!=="http:"&&t.protocol!=="https:")return u'),
+    'a data: or blob: target stopped being left to the browser');
+  assert.ok(shim.includes('if(t.host===H&&t.pathname.indexOf("/browse/")===0)return u'),
+    'the relay is rewriting its own address again');
+  assert.ok(!shim.includes('if(t.host!==H)return u'),
+    'the relay went back to serving only the host that served the page');
+  assert.ok(shim.includes('return "/browse/raw?u="+encodeURIComponent(t.href)'));
+  assert.ok(shim.includes('window.fetch=function') && shim.includes('X.prototype.open='),
+    'the rewrite left fetch or XHR');
+  // `"` followed by `##` ends the raw string early and rustc reads the rest of
+  // the shim as Rust.
+  assert.ok(!shim.slice(0, -'"##;'.length).includes('"##'), 'the shim carries a raw-string terminator');
+
+  // The router and the shim are injected after the opening tag, ahead of any
+  // script the page brings with it.
+  const prep = slice(work, 'pub fn prepare_readable', 'fn drop_declaration_metas');
+  assert.ok(prep.includes('"<head"') && prep.includes('"<html"'), 'the injection point moved');
+  const boot = slice(work, 'fn bootstrap(', '\n}\n');
+  assert.ok(boot.includes('{BROWSE_SHIM}{BROWSE_ROUTER}'), 'the doc lane stopped injecting the shim');
+  assert.ok(boot.includes('.replace(\'<\', "\\\\u003c")'), 'a page title could otherwise close this script');
+
+  // A click or submit the user made by hand is forwarded as their ask. A page
+  // that fires its own click is not, and forwarding one loops. Measured on a
+  // Google results page: its boot script submits a consent form, and because a
+  // read cannot carry that form's fields the pane re-read the action seven
+  // times in twelve seconds, each reply another page that submitted itself.
+  const router = slice(work, 'const BROWSE_ROUTER', '"##;');
+  assert.equal((router.match(/if\(!e\.isTrusted\)return;/g) || []).length, 2,
+    'a page that clicks or submits its own forms can drive the pane in a loop');
+  assert.ok(router.includes('fennecBrowseErr:"This form sends data'),
+    'a posted form is being read as a bare address, which is its own loop');
+  // A scripted `form.submit()` fires no event, so the browser carries it out
+  // against the frame's own address — the pane's read address, where the reader
+  // sees only `u` and drops every field. Measured: nine reads in nine seconds.
+  assert.ok(router.includes('FP[n]=function(){if(!brf(this,true))return O.apply(this,arguments)}'),
+    'a scripted form.submit() is left to the browser, fields and all');
+  assert.ok(router.includes('var b=M.url||location.href,u=new URL(f.getAttribute("action")||b,b)'),
+    'a form is being resolved against the pane, not the page it came from');
+  assert.ok(router.includes('fennecBrowseGo:u.href,fennecBrowseAuto:1'),
+    'a hop the page asked for is no longer told from one the user asked for');
+  assert.ok(router.includes('if(t&&t!=="_self")return false'),
+    'a form aimed at another frame is being stolen by the pane');
+  // A page whose boot script throws still paints its markup, so the pane would
+  // otherwise show a site that looks like it is ignoring the user.
+  assert.ok(router.includes('fennecBrowseErr:"Script stopped:'),
+    'a script that died inside the page stops saying so');
+  assert.ok(!router.slice(0, -'"##;'.length).includes('"##'),
+    'the router carries a raw-string terminator');
+
+  // The relay answers any script that reaches it, so two gates decide who may:
+  // the caller must have no origin of its own, and the target must be public.
+  const relay = slice(work, 'pub async fn browse_raw', 'let mut builder = PUBLIC_READER');
+  assert.ok(relay.includes('if !relay_allowed'), 'the origin gate is gone');
+  assert.ok(relay.includes('if private_host(&host)'), 'the public-web gate is gone');
+  assert.ok(relay.indexOf('relay_allowed') < relay.indexOf('private_host'),
+    'who is asking has to be settled before what they asked for');
+  // And the document lane forbids storing another site's page on this machine.
+  const doc = slice(work, 'pub async fn browse_doc', 'pub struct RawQuery');
+  assert.ok(doc.includes('CACHE_CONTROL') && doc.includes('"no-store"'),
+    'the reader wrote a third party, possibly signed-in, page into the browser cache');
+  const main = readSibling('fennec-coding-agent/src/main.rs');
+  assert.ok(main && main.includes('!path.starts_with("/browse/")'),
+    'revalidate_assets would overwrite that with no-cache');
+});
+
+test('the routes the tabs fetch exist in the Rust backend and client', () => {
+  const main = readSibling('fennec-coding-agent/src/main.rs');
+  if (main) {
+    for (const route of ['/api/work/files', '/api/work/file', '/api/browse', '/browse/doc', '/browse/raw']) {
+      assert.ok(main.includes(`"${route}"`), `the Axum router no longer registers ${route}`);
+    }
+  }
+  const client = readSibling('fennec-core/src/fennec-client/src/coding_agent.rs');
+  if (client) {
+    // The native shell builds against these; renaming one here without there
+    // is the same silent break the id checks exist for.
+    for (const method of ['pub fn work_files', 'pub fn work_file', 'pub fn browse']) {
+      assert.ok(client.includes(method), `fennec-client no longer has ${method}()`);
+    }
+  }
 });

@@ -11,8 +11,8 @@
   --text: #EDEDED;
   --text-muted: #A0A0A0;
   --brand: #E9865D;
-  --brand-dim: rgba(233, 134, 93, 0.15);
-  --brand-bg: rgba(233, 134, 93, 0.1);
+  --brand-dim: color-mix(in srgb, var(--brand) 15%, transparent);
+  --brand-bg: color-mix(in srgb, var(--brand) 10%, transparent);
   --ok: #5EC98F;
   --ok-dim: rgba(94, 201, 143, 0.15);
   --warn: #E0A458;
@@ -20,7 +20,7 @@
   --err-dim: rgba(239, 97, 92, 0.15);
   --blue: #5B9EF4;
   --blue-dim: rgba(91, 158, 244, 0.15);
-  --user-bg: rgba(233, 134, 93, 0.08);
+  --user-bg: color-mix(in srgb, var(--brand) 8%, transparent);
   --radius: 10px;
   --radius-sm: 8px;
   --radius-lg: 12px;
@@ -85,7 +85,7 @@ label { font-size: 12px; }
 .topbar-brand { display: flex; align-items: center; gap: 10px; }
 .brand-fox {
   color: var(--brand); flex-shrink: 0; width: 32px; height: 32px; padding: 7px;
-  border-radius: 10px; background: rgba(233, 134, 93, 0.12);
+  border-radius: 10px; background: color-mix(in srgb, var(--brand) 12%, transparent);
 }
 .brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.1px; }
 .brand-subtitle { display: none; }
@@ -98,11 +98,35 @@ label { font-size: 12px; }
 /* App layout */
 .app-layout {
   display: grid;
-  grid-template-columns: 260px 1fr 300px;
+  /* The two fixed panes are variables so a dragged width (inline on this
+     element) survives, while each media step just re-declares a smaller
+     default below it. */
+  --rail-w: 260px;
+  --insp-w: 300px;
+  grid-template-columns: var(--rail-w) 1fr var(--insp-w);
   height: calc(100vh - 48px);
   overflow: hidden;
+  position: relative;
 }
-.app-layout.inspector-closed { grid-template-columns: 260px 1fr; }
+.app-layout.inspector-closed { grid-template-columns: var(--rail-w) 1fr; }
+
+/* Drag strips sitting on the pane borders. 6px wide, centred on the 1px
+   border; the visible accent line is the ::after so the grip stays airy. */
+.pane-resizer {
+  position: absolute; top: 0; bottom: 0; width: 6px;
+  margin: 0; padding: 0; border: 0; background: transparent;
+  cursor: col-resize; touch-action: none; z-index: 25;
+}
+.pane-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px;
+  background: transparent; transition: background 150ms ease;
+}
+.pane-resizer:hover::after, .pane-resizer.dragging::after,
+.pane-resizer:focus-visible::after { background: var(--brand); }
+.pane-resizer:focus-visible { outline: none; }
+#rail-resizer { left: calc(var(--rail-w) - 3px); }
+#inspector-resizer { right: calc(var(--insp-w) - 3px); }
+.app-layout.inspector-closed #inspector-resizer { display: none; }
 
 /* Left panel */
 .left-panel {
@@ -208,12 +232,13 @@ label { font-size: 12px; }
 .task-status-dot.failed { background: var(--err); }
 .task-empty { font-size: 12px; color: var(--text-muted); padding: 12px 0; }
 
-.user-section { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.user-section { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: 10px; }
 .user-local { min-width: 0; }
 .user-name { font-weight: 600; }
 .user-account { color: var(--text-muted); font-size: 11px; }
-.github-account-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 5px; padding: 5px 7px; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
-.github-account-button .ui-icon { width: 14px; height: 14px; }
+.github-account-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 5px; padding: 5px 7px; font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; min-width: 0; }
+.github-account-button .ui-icon { width: 14px; height: 14px; flex-shrink: 0; }
+.github-account-button .account-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .github-account-button:hover { color: var(--text); background: var(--hover); border-color: var(--brand); }
 .github-account-button.connected { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
 .github-account-button.error { color: var(--err); }
@@ -496,6 +521,18 @@ label { font-size: 12px; }
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
+/* The image half of the same viewer. `contain` keeps a tall screenshot whole
+   instead of cropping it, and the same 45vh ceiling keeps it off the timeline. */
+.file-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: 45vh;
+  margin: 0 auto;
+  object-fit: contain;
+  background: var(--surface-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
 
 /* Diff card */
 .diff-card {
@@ -664,7 +701,7 @@ label { font-size: 12px; }
   text-transform: uppercase; color: var(--text-muted);
 }
 .model-download { font-size: 12px; }
-.model-download-icon { font-size: 14px; color: var(--text-muted); }
+.model-download-icon { color: var(--text-muted); flex-shrink: 0; }
 
 .send-button {
   width: 36px; height: 36px; border-radius: 50%;
@@ -802,13 +839,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .theme-item.active { background: var(--surface); border-left: 3px solid var(--brand); }
 .theme-swatch { width: 20px; height: 20px; border-radius: 4px; border: 1px solid var(--border); }
 
-.connection-form { display: flex; flex-direction: column; gap: 12px; }
-.connection-form label { font-size: 12px; color: var(--text-muted); }
-.connection-form input { min-height: 40px; }
-.connection-form .button-row { margin-top: 8px; }
-.connection-form .button-row button { flex: 1; }
 .mono { font-family: ui-monospace, monospace; }
 #diff-dialog { max-width: 720px; }
+#file-viewer-dialog { max-width: 800px; width: 90vw; }
 .diff-meta { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 12px; color: var(--text-muted); }
 .diff-body { max-height: 380px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); padding: 12px; }
 #task-search {
@@ -820,22 +853,25 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 /* Responsive */
 @media (max-width: 1400px) {
-  .app-layout { grid-template-columns: 240px 1fr 280px; }
-  .app-layout.inspector-closed { grid-template-columns: 240px 1fr; }
+  /* Re-declare the defaults, do not hard-code the columns: a dragged width is
+     an inline variable on .app-layout and must keep winning here too. */
+  .app-layout { --rail-w: 240px; --insp-w: 280px; }
 }
 @media (max-width: 1100px) {
-  .app-layout { grid-template-columns: 220px 1fr; }
-  .app-layout.inspector-closed { grid-template-columns: 220px 1fr; }
-  /* The grid drops its third column here, so the inspector floats over the
-     timeline instead of being hidden outright — .right-panel.collapsed still
-     owns visibility, so #inspector-toggle keeps working at any width. */
-  .app-layout { --inspector-w: min(320px, 88vw); }
+  /* The rail stays a live grid column and the inspector floats, but both
+     borders remain grabbable: this tier only re-declares smaller defaults,
+     and a dragged inline --rail-w/--insp-w still outranks them. The floating
+     panel takes its width from --insp-w too, so one value drives panel and
+     handle, and 88vw keeps a small window from being covered. */
+  .app-layout { --rail-w: 220px; --insp-w: 320px; --inspector-w: min(var(--insp-w), 88vw); grid-template-columns: var(--rail-w) 1fr; }
+  .app-layout.inspector-closed { grid-template-columns: var(--rail-w) 1fr; }
   .right-panel {
     position: fixed; top: 48px; right: 0; bottom: 0;
     width: var(--inspector-w);
     z-index: 20;
     box-shadow: -14px 0 32px rgba(0, 0, 0, 0.45);
   }
+  #inspector-resizer { right: calc(var(--inspector-w) - 3px); }
   /* Fixed takes the panel out of the grid flow, so without this inset it
      covers the composer's model, mic and Send buttons and they cannot be
      clicked. The panel is only ever shown when .inspector-closed is absent. */
@@ -845,6 +881,9 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
   .app-layout { grid-template-columns: 1fr; }
   .app-layout.inspector-closed { grid-template-columns: 1fr; }
   .left-panel { display: none; }
+  /* The rail itself is gone at this size, so its handle goes with it;
+     the floating inspector stays resizable. */
+  #rail-resizer { display: none; }
   .topbar { padding: 0 12px; }
   .brand-subtitle { display: none; }
   .composer { padding: 10px 12px; }
@@ -996,11 +1035,17 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 
 .workspace-delete,
-.task-actions { opacity: 0.45; }
+.workspace-new-task,
+.task-actions,
+#btn-add-workspace { opacity: 0; }
 .workspace-item:hover .workspace-delete,
+.workspace-item:hover .workspace-new-task,
 .workspace-delete:focus-visible,
+.workspace-new-task:focus-visible,
 .task-item:hover .task-actions,
-.task-item:focus-within .task-actions { opacity: 1; }
+.task-item:focus-within .task-actions,
+.section-header:hover #btn-add-workspace,
+.section-header:focus-within #btn-add-workspace { opacity: 1; }
 
 .timeline-empty { gap: 8px; }
 .timeline-empty-title { color: var(--text); font-size: 16px; font-weight: 600; }
@@ -1226,3 +1271,124 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.52); backdrop-filter: blur(4px); 
 .composer-input::placeholder { color: color-mix(in srgb, var(--text-muted) 82%, var(--text)); }
 .context-value { font-size: 12px; line-height: 1.45; }
 .agent-note { font-size: 12px; }
+
+/* "Working in" banner + GitHub repository picker
+   (the DOM mirror of fennec-ui::repository). */
+.working-in-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.working-in-head .icon-button-small { width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 6px; }
+.repository-name {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px; color: var(--brand); overflow-wrap: anywhere; margin-top: 2px;
+}
+/* Bound state: at a narrow rail the branch/version/tree chips move whole to a
+   second line instead of breaking "working tree" across two. */
+#repository-bound .workspace-meta { flex-wrap: wrap; }
+#repository-bound .workspace-meta > span { white-space: nowrap; }
+/* Unbound state of the panel: the words and the action the native widget shows
+   when the workspace has no repository yet. */
+.repository-unbound { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.repository-unconnected { font-size: 11px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+.repository-create-inline { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.repository-create-label { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.repository-create-row { display: flex; align-items: center; gap: 6px; }
+.repository-create-input {
+  flex: 1; height: 28px; padding: 0 8px; font-size: 11px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); font-family: inherit;
+}
+.repository-create-input:focus { outline: none; border-color: var(--brand); }
+.repository-create-btn {
+  height: 28px; padding: 0 12px; font-size: 11px; font-weight: 600;
+  background: var(--brand); color: white; border: 0; border-radius: var(--radius-sm);
+  cursor: pointer; white-space: nowrap;
+}
+.repository-create-btn:hover { opacity: 0.9; }
+.connect-repository {
+  margin-top: 2px; padding: 0; border: 0; background: none; cursor: pointer;
+  color: var(--brand); font-family: inherit; font-size: 11px;
+}
+.connect-repository:hover { text-decoration: underline; }
+.repository-dialog-body { max-height: 60vh; overflow-y: auto; }
+.repository-choice-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; margin: 10px 0 18px; }
+.repository-choice {
+  text-align: left; font-size: 13px; color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+.repository-choice:hover { background: var(--hover); border-color: var(--border-light); }
+.repository-choice.selected { border-color: var(--brand); background: var(--brand-bg); }
+.repository-create-row { display: flex; align-items: center; gap: 8px; }
+.repository-create-row .ws-name-input { flex: 1; }
+.integration-ready { color: var(--ok); font-size: 13px; }
+
+/* Inspector tabs: Overview / Files / Browser.
+   Segmented pill row over one column of content; the active segment is the
+   only one lifted off the track, so the eye lands on it without a second
+   accent color competing with the brand. */
+.insp-tabs {
+  display: flex; gap: 2px; padding: 2px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.insp-tab {
+  flex: 1; min-height: 26px; padding: 3px 8px;
+  font-size: 12px; color: var(--text-muted);
+  border: none; border-radius: 6px; background: transparent;
+}
+.insp-tab:hover { color: var(--text); }
+.insp-tab:active { transform: scale(0.97); }
+.insp-tab.active {
+  background: var(--surface-light); color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.insp-view { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+
+/* Files: the workspace through the server's jail. Rows read like the
+   delivered-file list, not a desktop file explorer — one line per entry,
+   name first, size in tabular figures at the right edge. */
+.fm-bar { display: flex; align-items: center; gap: 6px; }
+.fm-bar .icon-button, .br-bar .icon-button {
+  width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0;
+  font-size: 14px; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent;
+}
+.fm-bar .icon-button:hover, .br-bar .icon-button:hover { background: var(--hover); color: var(--text); }
+.fm-bar .icon-button:active, .br-bar .icon-button:active { transform: scale(0.97); }
+.fm-path {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fm-list { display: flex; flex-direction: column; gap: 1px; }
+.fm-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 0; padding: 5px 8px; text-align: left;
+  font-size: 12.5px; color: var(--text);
+  border: none; border-radius: 6px; background: transparent;
+}
+.fm-row:hover { background: var(--hover); }
+.fm-row:active { transform: scale(0.99); }
+.fm-row-icon { display: inline-flex; flex-shrink: 0; color: var(--text-muted); }
+.fm-row-icon .ui-icon { width: 14px; height: 14px; }
+.fm-dir .fm-row-icon { color: var(--brand); }
+.fm-row-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fm-row-size { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.fm-note { font-size: 11.5px; padding: 2px 4px; }
+
+/* Browser: address field plus one page of stripped prose. Same one-column
+   reading measure as the file viewer above it. */
+.br-bar { display: flex; align-items: center; gap: 6px; }
+.br-url { flex: 1; min-width: 0; padding: 6px 10px; font-size: 12.5px; }
+.br-go {
+  flex-shrink: 0; min-height: 30px; padding: 3px 12px;
+  font-size: 12.5px; font-weight: 600;
+  background: var(--brand); color: var(--bg); border: none;
+}
+.br-go:hover { background: #d98a6a; }
+.br-go:active { transform: scale(0.97); }
+.br-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.br-meta { font-size: 11px; overflow-wrap: anywhere; }
+.br-frame {
+  width: 100%; height: 55vh; min-height: 200px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: #fff;
+}
