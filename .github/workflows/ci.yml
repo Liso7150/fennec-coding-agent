@@ -1,0 +1,90 @@
+name: coding-agent
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fennec-coding-agent
+      - uses: actions/checkout@v4
+        with:
+          repository: Liso7150/fennec-core
+          path: fennec-core
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Rust tests
+        working-directory: fennec-coding-agent
+        run: cargo test --release
+      - name: PWA tests
+        working-directory: fennec-coding-agent
+        run: node --test web/tests/
+      - name: Build
+        working-directory: fennec-coding-agent
+        run: cargo build --release
+      - name: Package backend binaries
+        working-directory: fennec-coding-agent
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          python - "$VERSION" <<'PY'
+          import os, pathlib, sys, tarfile, zipfile
+          version = sys.argv[1]
+          release = pathlib.Path("target/release")
+          names = ["fennec-agent", "fennec-nod", "fennec-antigravity"]
+          if os.name == "nt":
+              names = [name + ".exe" for name in names]
+          platform = f"{os.environ['RUNNER_OS'].lower()}-{os.environ['RUNNER_ARCH'].lower()}"
+          files = [release / name for name in names if (release / name).is_file()]
+          if not files:
+              raise SystemExit("no coding-agent binaries to package")
+          if os.name == "nt":
+              asset = pathlib.Path("dist") / f"fennec-coding-agent-{version}-{platform}.zip"
+              with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED) as archive:
+                  for source in files:
+                      archive.write(source, source.name)
+          else:
+              asset = pathlib.Path("dist") / f"fennec-coding-agent-{version}-{platform}.tar.gz"
+              with tarfile.open(asset, "w:gz") as archive:
+                  for source in files:
+                      archive.add(source, arcname=source.name)
+          print(asset)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fennec-coding-agent-${{ matrix.os }}
+          path: fennec-coding-agent/dist/*
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fennec-coding-agent-*
+          path: dist
+          merge-multiple: true
+      - name: Publish checksums and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find dist -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > dist/SHA256SUMS
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/*
