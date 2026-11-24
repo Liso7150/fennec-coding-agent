@@ -1,10 +1,12 @@
 use axum::{
-    extract::{Path, Request, State, WebSocketUpgrade},
-    http::{header, HeaderValue, StatusCode},
+    body::Bytes,
+    extract::{Path, Query, Request, State, WebSocketUpgrade},
+    extract::DefaultBodyLimit,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware,
     response::{Html, IntoResponse, Json, Response},
     response::sse::{Sse, Event},
-    routing::{get, post},
+    routing::{any, get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,7 @@ mod updater;
 mod github;
 mod obsidian;
 mod ag_ui;
+mod work;
 
 use task::{Task, TaskStatus, TaskId};
 use agent::{Agent, AgentIdentity, AgentStatus};
@@ -95,6 +98,7 @@ async fn main() {
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
         .route("/api/capabilities", get(capabilities))
+        .route("/api/models", get(models))
         .route("/api/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/:id", get(get_task).delete(delete_task))
         .route("/api/tasks/:id/start", post(start_task))
@@ -106,9 +110,20 @@ async fn main() {
         .route("/api/repositories/:id", get(get_repository))
         .route("/api/repositories/:id/status", get(repository_status))
         .route("/api/github/account", get(github_account))
-        .route("/api/github/repositories", get(github_repositories))
+        .route("/api/github/repositories", get(github_repositories).post(github_create_repository))
+        .route("/api/github/detect", get(github_detect))
         .route("/api/obsidian/status", get(obsidian_status))
         .route("/api/obsidian/notes", post(obsidian_write_note))
+        .route("/api/outlets", get(outlets_status))
+        // Axum's default body limit is 2 MiB, well under a 16 MiB clip, so this
+        // route raises it — with a MiB of headroom so an over-long body reaches
+        // the handler and gets the 413 sentence instead of a bare refusal.
+        .route("/api/stt", post(stt).layer(DefaultBodyLimit::max(fennec_client::MAX_AUDIO_BYTES + (1 << 20))))
+        .route("/api/work/files", get(work::files))
+        .route("/api/work/file", get(work::file))
+        .route("/api/browse", post(work::browse))
+        .route("/browse/doc", get(work::browse_doc))
+        .route("/browse/raw", any(work::browse_raw))
         .route("/api/events", get(events_sse))
         .route("/api/events/ws", get(events_ws))
         .route("/api/copilotkit/agent/:agentId/run", post(ag_ui::copilotkit_run))
@@ -141,6 +156,58 @@ async fn main() {
         tracing::error!("no PWA app.js found; serving the embedded index without script");
     }
     axum::serve(listener, app).await.unwrap();
+}
+
+/// The outlet gates the Python core owns, served by the canonical backend so
+/// both UI surfaces read one implementation without a Python server running.
+async fn outlets_status() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(|| fennec_client::suite::discover().outlets_status()).await {
+        Ok(Some(value)) => Json(value).into_response(),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"ok": false, "error": "outlet probes unavailable: no Python core checkout on this machine"})),
+        )
+            .into_response(),
+    }
+}
+
+/// Dictation: the raw clip a shell recorded, handed to the faster-whisper
+/// sidecar, which `fennec_client::Speech` starts when nothing holds the port.
+///
+/// The route exists because starting the sidecar is the only way dictation can
+/// work on a machine where the Python core is not running, and the shells
+/// deliberately do not each own that process. Refusals use the same vocabulary
+/// as `fennec-core/server.py` (`400` empty, `413` over 16 MiB, `503` the sidecar
+/// could not be reached) and the same body shape the PWA reads (`detail` or
+/// `error`), so neither surface has to know which server answered.
+async fn stt(headers: HeaderMap, body: Bytes) -> Response {
+    if body.is_empty() {
+        return stt_refusal(StatusCode::BAD_REQUEST, "send raw audio bytes");
+    }
+    if body.len() > fennec_client::MAX_AUDIO_BYTES {
+        return stt_refusal(StatusCode::PAYLOAD_TOO_LARGE, "audio must be at most 16 MiB");
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("audio/webm")
+        .to_string();
+    let clip = body.to_vec();
+    let reply = tokio::task::spawn_blocking(move || {
+        let speech = fennec_client::Speech::new();
+        speech.ensure()?;
+        speech.transcribe(&clip, &content_type)
+    })
+    .await;
+    match reply {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(error)) => stt_refusal(StatusCode::SERVICE_UNAVAILABLE, &error),
+        Err(_) => stt_refusal(StatusCode::SERVICE_UNAVAILABLE, "the transcription task was cancelled"),
+    }
+}
+
+fn stt_refusal(status: StatusCode, error: &str) -> Response {
+    (status, Json(serde_json::json!({"ok": false, "error": error}))).into_response()
 }
 
 /// Open a URL in the OS default browser without flashing a console window.
@@ -199,11 +266,13 @@ async fn serve_index() -> Html<&'static str> {
 /// directive browsers heuristically cache them indefinitely — an old build's
 /// stylesheet then silently replaces the current UI. `no-cache` forces
 /// revalidation on every load; ServeDir answers If-Modified-Since, so an
-/// unchanged file costs a 304 rather than a re-download.
+/// unchanged file costs a 304 rather than a re-download. `/browse/` is left
+/// alone: those routes answer with someone else's page and set their own
+/// directive, which this one would overwrite.
 async fn revalidate_assets(req: Request, next: middleware::Next) -> Response {
     let path = req.uri().path().to_owned();
     let mut res = next.run(req).await;
-    if !path.starts_with("/api/") && path != "/health" {
+    if !path.starts_with("/api/") && !path.starts_with("/browse/") && path != "/health" {
         res.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
@@ -261,8 +330,38 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
             "native-nod-stdio",
             "native-antigravity",
             "obsidian-local-vault-write",
+            "speech-transcription",
             "static-web-assets",
         ],
+    })
+}
+
+#[derive(Serialize)]
+struct ServedModel {
+    id: String,
+    name: String,
+    max_model_len: u64,
+}
+
+#[derive(Serialize)]
+struct ModelsResponse {
+    models: Vec<ServedModel>,
+}
+
+/// The checkpoint the engine actually holds. Fennec serves one model and answers
+/// every request as it, so a client that kept its own stored choice would name a
+/// model nothing is answering for. An unreachable engine yields an empty list,
+/// which leaves the client on its default instead of showing an unproven model.
+async fn models() -> Json<ModelsResponse> {
+    let served = tokio::task::spawn_blocking(|| fennec_client::Engine::new().model_id())
+        .await
+        .ok()
+        .flatten();
+    Json(ModelsResponse {
+        models: served
+            .map(|(id, max_model_len)| ServedModel { name: id.clone(), id, max_model_len })
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -595,6 +694,41 @@ async fn github_repositories() -> Json<github::GithubRepositoryStatus> {
     Json(github::repository_status().await)
 }
 
+#[derive(Deserialize)]
+struct DetectPath {
+    path: String,
+}
+
+/// The PWA's workspace bootstrap, mirroring the desktop's git-remote detection:
+/// a folder's GitHub `owner/repo` (from `fennec_client::git`), or null.
+async fn github_detect(Query(request): Query<DetectPath>) -> Json<serde_json::Value> {
+    let repository = tokio::task::spawn_blocking(move || {
+        fennec_client::git::repo_context(&request.path).github_repo
+    })
+    .await
+    .unwrap_or(None);
+    Json(serde_json::json!({ "repository": repository }))
+}
+
+#[derive(Deserialize)]
+struct CreateGithubRepositoryRequest {
+    name: String,
+    private: bool,
+}
+
+async fn github_create_repository(
+    Json(request): Json<CreateGithubRepositoryRequest>,
+) -> impl IntoResponse {
+    match github::create_repository(&request.name, request.private).await {
+        Ok(repository) => (StatusCode::CREATED, Json(repository)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": error })),
+        )
+            .into_response(),
+    }
+}
+
 async fn obsidian_status() -> Json<obsidian::ObsidianStatus> {
     Json(obsidian::status())
 }
@@ -683,7 +817,34 @@ struct RegisterRepositoryRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::capabilities;
+    use super::{capabilities, github_detect, models, stt, DetectPath, Json};
+    use axum::body::Bytes;
+    use axum::extract::Query;
+    use axum::http::{HeaderMap, StatusCode};
+
+    /// The status and JSON sentence of a refusal from `/api/stt`, which is what
+    /// the PWA's `body.detail || body.error` and the shell's toast read.
+    async fn refuse(body: Bytes) -> (StatusCode, serde_json::Value) {
+        let response = stt(HeaderMap::new(), body).await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_silent_clip_is_refused_before_the_sidecar_is_started() {
+        let (status, value) = refuse(Bytes::new()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(value["error"], "send raw audio bytes");
+    }
+
+    #[tokio::test]
+    async fn a_clip_over_the_sidecar_cap_is_refused_with_its_limit() {
+        let clip = vec![0u8; fennec_client::MAX_AUDIO_BYTES + 1];
+        let (status, value) = refuse(Bytes::from(clip)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(value["error"], "audio must be at most 16 MiB");
+    }
 
     #[tokio::test]
     async fn capabilities_identify_the_rust_backend_and_transport_features() {
@@ -694,5 +855,28 @@ mod tests {
         assert!(response.features.contains(&"events-sse"));
         assert!(response.features.contains(&"events-websocket"));
         assert!(response.features.contains(&"static-web-assets"));
+        assert!(response.features.contains(&"speech-transcription"));
+    }
+
+    #[tokio::test]
+    async fn models_reports_the_checkpoint_the_engine_holds() {
+        // Shape-only: whether an engine is up on this box depends on the
+        // machine, so the assertion is that nothing is invented. Either the
+        // engine is unreachable and the list is empty, or every entry carries
+        // the served id as its own display name.
+        let Json(response) = models().await;
+        for model in &response.models {
+            assert!(!model.id.is_empty());
+            assert_eq!(model.name, model.id);
+        }
+        let value = serde_json::to_value(&response).unwrap();
+        assert!(value["models"].is_array());
+    }
+
+    #[tokio::test]
+    async fn github_detect_reports_null_for_a_path_that_is_not_a_repository() {
+        let missing = if cfg!(windows) { "Z:/definitely-not-here" } else { "/definitely-not-here" };
+        let Json(body) = github_detect(Query(DetectPath { path: missing.into() })).await;
+        assert_eq!(body["repository"], serde_json::Value::Null);
     }
 }

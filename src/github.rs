@@ -108,6 +108,40 @@ pub async fn repository_status() -> GithubRepositoryStatus {
     }
 }
 
+pub async fn create_repository(name: &str, private: bool) -> Result<GithubRepository, String> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.len() > 100
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("Repository names may contain only letters, numbers, hyphens, underscores, and periods".to_string());
+    }
+    let name_arg = format!("name={name}");
+    let private_arg = format!("private={private}");
+    let output = Command::new("gh")
+        .args(["api", "--hostname", "github.com", "--method", "POST", "user/repos", "-f"])
+        .arg(&name_arg)
+        .arg("-F")
+        .arg(&private_arg)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|_| "GitHub CLI is not installed".to_string())?;
+    if !output.status.success() {
+        return Err("GitHub could not create the repository".to_string());
+    }
+    serde_json::from_slice::<GithubRepositoryPayload>(&output.stdout)
+        .map(|repository| GithubRepository {
+            name: repository.name,
+            full_name: repository.full_name,
+            private: repository.private,
+            html_url: repository.html_url,
+            default_branch: repository.default_branch,
+            owner_login: repository.owner.login,
+        })
+        .map_err(|_| "GitHub returned an invalid repository response".to_string())
+}
+
 async fn api(endpoint: &str) -> Result<Vec<u8>, String> {
     let output = Command::new("gh")
         .args(["api", "--hostname", "github.com", endpoint])
