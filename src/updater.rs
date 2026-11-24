@@ -103,6 +103,29 @@ pub enum UpdateStatus {
     Error(String),
 }
 
+/// `Some(true)` when `candidate` is a strictly newer dotted version than
+/// `current`, `Some(false)` when it is the same or older, and `None` when
+/// either side is not three plain numbers (a `dev-<sha>` tag, say) so the
+/// caller refuses to guess.
+///
+/// This exists because the published releases run *behind* a working tree: a
+/// 1.0.0 install must not pull the 0.9.0 assets just because the tag differs.
+pub fn is_newer(candidate: &str, current: &str) -> Option<bool> {
+    fn parts(version: &str) -> Option<[u64; 3]> {
+        let version = version.trim().trim_start_matches('v');
+        let mut numbers = [0u64; 3];
+        for (field, slot) in version.split('.').zip(numbers.iter_mut()) {
+            *slot = field.parse().ok()?;
+        }
+        Some(numbers)
+    }
+    let (candidate, current) = (parts(candidate)?, parts(current)?);
+    Some(candidate > current)
+}
+
+/// Release asset that carries the SHA-256 digests of the other assets.
+pub const CHECKSUMS_ASSET: &str = "SHA256SUMS";
+
 /// Check for updates from GitHub releases
 pub async fn check_stable(current_version: &str) -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
@@ -127,12 +150,14 @@ pub async fn check_stable(current_version: &str) -> Result<Option<Release>, Stri
         .await
         .map_err(|e| format!("Parse release: {e}"))?;
 
-    // Compare versions
-    if release.tag_name == format!("v{}", current_version) {
+    // Only a release newer than the running binary is an update. The published
+    // ladder runs behind a working tree, so an unequal tag is not enough.
+    let version = release.tag_name.trim_start_matches('v').to_string();
+    if is_newer(&version, current_version) != Some(true) {
         return Ok(None);
     }
 
-    let assets = release
+    let assets: Vec<Asset> = release
         .assets
         .into_iter()
         .map(|a| Asset {
@@ -141,13 +166,20 @@ pub async fn check_stable(current_version: &str) -> Result<Option<Release>, Stri
             size: a.size,
         })
         .collect();
+    // The publisher's digest list, when the release attached one. Absent means
+    // the download cannot be verified, which `download_checksum` never learns
+    // about, so an untagged release installs unverified rather than not at all.
+    let checksums_url = assets
+        .iter()
+        .find(|a| a.name == CHECKSUMS_ASSET)
+        .map(|a| a.download_url.clone());
 
     Ok(Some(Release {
-        version: release.tag_name.trim_start_matches('v').to_string(),
+        version,
         tag: release.tag_name,
         published_at: release.published_at,
         assets,
-        checksums_url: None,
+        checksums_url,
     }))
 }
 
@@ -237,15 +269,28 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(result)
 }
 
-/// Pre-start update check: runs once before the app starts, only applies if new version exists
+/// Pre-start update check: runs once before the app starts, only applies if a
+/// newer release exists *and* publishes a binary for this platform.
 pub async fn pre_start_update(current_version: &str) -> Option<String> {
     match check_stable(current_version).await {
         Ok(Some(release)) => {
+            let asset_name = Platform::current().asset_name("fennec-agent");
+            if !release.assets.iter().any(|a| a.name == asset_name) {
+                // Releases carry no per-platform binary; `fennec update`, which
+                // fast-forwards the checkout, is what moves this build. Saying
+                // so is an advisory, not a failed update.
+                eprintln!(
+                    "[updater] v{} is newer than {}, but publishes no {asset_name}; \
+                     run `fennec update` to fast-forward the checkout.",
+                    release.version, current_version
+                );
+                return None;
+            }
             eprintln!(
                 "[updater] New version available: {} (current: {})",
                 release.version, current_version
             );
-            match apply_update(&release).await {
+            match apply_update(&release, &asset_name).await {
                 Ok(()) => {
                     eprintln!("[updater] Updated to {} - restart required", release.version);
                     Some(release.version)
@@ -267,10 +312,7 @@ pub async fn pre_start_update(current_version: &str) -> Option<String> {
     }
 }
 
-async fn apply_update(release: &Release) -> Result<(), String> {
-    let platform = Platform::current();
-    let asset_name = platform.asset_name("fennec-agent");
-
+async fn apply_update(release: &Release, asset_name: &str) -> Result<(), String> {
     let asset = release
         .assets
         .iter()
@@ -316,10 +358,11 @@ async fn download_checksum(url: &str, asset_name: &str) -> Result<String, String
         .await
         .map_err(|e| format!("Read checksums: {e}"))?;
 
-    // Parse checksum file (format: "<checksum>  <filename>")
+    // Parse checksum file (format: "<checksum>  <filename>", the filename
+    // possibly prefixed with `*` for a binary-mode read).
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() == 2 && parts[1] == asset_name {
+        if parts.len() == 2 && parts[1].trim_start_matches('*') == asset_name {
             return Ok(parts[0].to_string());
         }
     }
@@ -410,6 +453,22 @@ mod tests {
             assert_eq!(platform.os, "linux");
             assert_eq!(platform.ext, "bin");
         }
+    }
+
+    #[test]
+    fn a_higher_release_is_an_update_and_an_older_one_is_not() {
+        assert_eq!(is_newer("1.1.0", "1.0.0"), Some(true));
+        assert_eq!(is_newer("1.10.0", "1.9.0"), Some(true));
+        assert_eq!(is_newer("v1.1.0", "1.0.0"), Some(true));
+        assert_eq!(is_newer("1.0.0", "1.0.0"), Some(false));
+        assert_eq!(is_newer("0.9.0", "1.0.0"), Some(false));
+        assert_eq!(is_newer("1.0", "1.0.0"), Some(false));
+    }
+
+    #[test]
+    fn a_tag_the_comparator_does_not_understand_offers_nothing() {
+        assert_eq!(is_newer("dev-abc1234", "1.0.0"), None);
+        assert_eq!(is_newer("1.0.0", "1.0.0-rc1"), None);
     }
 
     #[test]
