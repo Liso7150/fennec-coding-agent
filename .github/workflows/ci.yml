@@ -3,7 +3,7 @@ name: coding-agent
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v1.0.0"]
   pull_request:
   workflow_dispatch:
 
@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Liso7150/fennec-core
+          ref: v1.0.0
           path: fennec-core
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux build deps
@@ -45,34 +46,52 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           python - "$VERSION" <<'PY'
-          import os, pathlib, sys, tarfile, zipfile
+          import os, pathlib, re, shutil, sys, tarfile, zipfile
           version = sys.argv[1]
           release = pathlib.Path("target/release")
-          names = ["fennec-agent", "fennec-nod", "fennec-antigravity"]
-          if os.name == "nt":
-              names = [name + ".exe" for name in names]
-          platform = f"{os.environ['RUNNER_OS'].lower()}-{os.environ['RUNNER_ARCH'].lower()}"
-          files = [release / name for name in names if (release / name).is_file()]
-          if not files:
-              raise SystemExit("no coding-agent binaries to package")
+          suffix = ".exe" if os.name == "nt" else ""
+          required = release / f"fennec-agent{suffix}"
+          if not required.is_file():
+              raise SystemExit(f"required coding-agent binary not found: {required}")
+          names = ["fennec-nod", "fennec-antigravity"]
+          if suffix:
+              names = [name + suffix for name in names]
+          files = [required] + [release / name for name in names if (release / name).is_file()]
+          runner_os = os.environ["RUNNER_OS"].lower()
+          runner_arch = os.environ["RUNNER_ARCH"].upper()
+          arch = {"X64": "x86_64", "ARM64": "aarch64"}.get(runner_arch)
+          if arch is None:
+              raise SystemExit(f"unsupported RUNNER_ARCH: {runner_arch}")
+          platform = f"{runner_os}-{arch}"
+          raw_asset = pathlib.Path("dist") / f"fennec-agent-{platform}{suffix}"
+          if re.fullmatch(rf"fennec-agent-(windows|macos|linux)-(x86_64|aarch64){re.escape(suffix)}", raw_asset.name) is None:
+              raise SystemExit(f"invalid coding-agent asset name: {raw_asset.name}")
+          shutil.copy2(required, raw_asset)
           if os.name == "nt":
               asset = pathlib.Path("dist") / f"fennec-coding-agent-{version}-{platform}.zip"
               with zipfile.ZipFile(asset, "w", zipfile.ZIP_DEFLATED) as archive:
                   for source in files:
                       archive.write(source, source.name)
+              extension = r"\.zip"
           else:
               asset = pathlib.Path("dist") / f"fennec-coding-agent-{version}-{platform}.tar.gz"
               with tarfile.open(asset, "w:gz") as archive:
                   for source in files:
                       archive.add(source, arcname=source.name)
-          print(asset)
+              extension = r"\.tar\.gz"
+          if re.fullmatch(rf"fennec-coding-agent-{re.escape(version)}-(windows|macos|linux)-(x86_64|aarch64){extension}", asset.name) is None:
+              raise SystemExit(f"invalid coding-agent archive name: {asset.name}")
+          for packaged in (asset, raw_asset):
+              if not packaged.is_file():
+                  raise SystemExit(f"coding-agent asset was not created: {packaged}")
+              print(packaged)
           PY
       - uses: actions/upload-artifact@v4
         with:
           name: fennec-coding-agent-${{ matrix.os }}
           path: fennec-coding-agent/dist/*
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/tags/v1.0.0'
     needs: build-test
     runs-on: ubuntu-latest
     steps:
@@ -84,7 +103,23 @@ jobs:
       - name: Publish checksums and release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          python - <<'PY'
+          import pathlib, re
+          root = pathlib.Path("dist")
+          assets = sorted(path.name for path in root.iterdir() if path.is_file() and path.name != "SHA256SUMS")
+          if not assets:
+              raise SystemExit("no release assets to checksum")
+          names = []
+          for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+              match = re.fullmatch(r"([0-9a-f]{64}) [ *]([^/\\]+)", line)
+              if match is None:
+                  raise SystemExit(f"invalid checksum entry: {line!r}")
+              names.append(match.group(2))
+          if sorted(names) != assets:
+              raise SystemExit("SHA256SUMS entries do not match release asset basenames")
+          PY
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --notes "Fennec coding-agent 1.0.0. Rust auxiliary/chat service; supervised coding is provided by fennec-core. See CHANGELOG.md. Windows binaries are unsigned; SAC remains off by user choice."
           gh release upload "$GITHUB_REF_NAME" dist/*

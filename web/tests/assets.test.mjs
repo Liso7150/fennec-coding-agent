@@ -163,7 +163,11 @@ test('unbound workspaces adopt the repository of their first source folder', () 
   assert.match(APP, /function syncWorkspaceRepositories\(\)/);
   assert.match(APP, /\/api\/github\/detect\?path=/);
   assert.match(APP, /if \(ws\.githubRepo\) continue;/);
-  assert.match(APP, /syncBackendRepositories\(\);\n  syncWorkspaceRepositories\(\);/);
+  const health = slice(APP, 'async function checkHealth()', '\n  }');
+  assert.match(health, /await probeCapabilities\(\);/);
+  assert.match(health, /if \(supportsRepositoryControls\(\)\) syncBackendRepositories\(\);/);
+  assert.match(health, /if \(supportsGithubControls\(\)\) syncWorkspaceRepositories\(\);/);
+  assert.match(health, /if \(supportsCoding\(\)\) drainQueue\(\);/);
 });
 
 test('the download row keeps its icon inside the shared ui-icon box', () => {
@@ -194,9 +198,102 @@ test('settings expose the Integrations tab with the capability contract', () => 
   assert.match(HTML, /id="panel-integrations"/);
   assert.match(HTML, /Native Rust stdio MCP server: fennec-nod/);
   assert.match(HTML, /Backend capabilities are unavailable\./);
-  assert.match(APP, /apiFetch\('\/api\/capabilities'\)/);
+  assert.match(APP, /apiFetch\('\/api\/capabilities'/);
   assert.match(APP, /· protocol /);
-  assert.match(APP, /Start fennec-agent to load integration capabilities\./);
+  assert.match(APP, /Start fennec-core to load coding capabilities, or fennec-agent for Rust-only tools\./);
+});
+
+test('Rust advertises chat-only on the canonical bind, never coding', () => {
+  const rust = readSibling('fennec-coding-agent/src/main.rs');
+  assert.ok(rust, 'the Rust backend source is missing');
+  const boot = slice(rust, 'let listener = if let Ok(bind_addr)', '    let addr =');
+  assert.match(boot, /FENNEC_AGENT_ADDR/);
+  assert.match(boot, /bind\("127\.0\.0\.1:8788"\)/);
+  assert.doesNotMatch(boot, /8787/, 'the Rust server must not fall back to the core port');
+
+  const response = slice(rust, 'async fn capabilities()', '\n}');
+  const features = [...response.matchAll(/"([a-z0-9-]+)"/g)].map((match) => match[1]);
+  const coding = ['supervised-agent', 'tool-execution', 'per-call-approvals', 'agent-polling'];
+  assert.ok(features.includes('chat-only'));
+  assert.deepEqual(features.filter((feature) => coding.includes(feature)), [],
+    'Rust must not advertise a supervised coding feature');
+  for (const auxiliary of ['tasks', 'agents', 'repositories', 'events-sse', 'events-websocket',
+    'copilotkit-ag-ui', 'native-nod-stdio', 'native-antigravity',
+    'obsidian-local-vault-write', 'speech-transcription', 'static-web-assets']) {
+    assert.ok(features.includes(auxiliary), `Rust dropped its existing ${auxiliary} feature`);
+  }
+  assert.match(rust, /for required in \[[\s\S]*?"supervised-agent"[\s\S]*?"agent-polling"/);
+  assert.match(rust, /!response\.features\.contains\(&required\)/);
+});
+
+test('the PWA requires one complete coding capability contract', () => {
+  const coding = slice(APP, 'const CODING_FEATURES = [', '\n  ];');
+  const features = [...coding.matchAll(/'([a-z0-9-]+)'/g)].map((match) => match[1]);
+  assert.deepEqual(features, ['supervised-agent', 'tool-execution', 'per-call-approvals', 'agent-polling']);
+  assert.match(coding, /supervised-agent/);
+  assert.match(APP, /CAPABILITY_PROTOCOL_VERSION = 1/);
+  assert.match(APP, /async function probeCapabilities\(\)/);
+  assert.match(APP, /apiFetch\('\/api\/capabilities', \{ cache: 'no-store' \}\)/);
+  assert.doesNotMatch(APP, /probeBackendKind|createBackendTask|postBackendMessage|['"`]\/api\/health['"`]/,
+    'backend identity must never be guessed from health or an endpoint shape');
+  assert.doesNotMatch(APP, /\/api\/tasks\/:id\/stop|send_message/, 'the PWA must not mutate Rust tasks');
+
+  const parse = slice(APP, 'function parseCapabilities(value)', '\n  }');
+  assert.match(parse, /value\.protocol_version !== CAPABILITY_PROTOCOL_VERSION/);
+  assert.match(parse, /value\.backend === 'fennec-core'/);
+  assert.match(parse, /value\.backend === 'fennec-coding-agent'/);
+  assert.match(parse, /features\.includes\('chat-only'\)/);
+  assert.match(APP, /if \(!contract \|\| !supportsCoding\(\)\)/);
+  assert.match(APP, /if \(!supportsCoding\(\)\) \{[\s\S]*?return;/);
+});
+
+test('supervised identity controls agent routes, polling failures and SSE', () => {
+  const identity = slice(APP, 'function isCoreTask(task)', '\n  }');
+  assert.match(identity, /task\.core === true/);
+  assert.match(identity, /typeof task\.backendId === 'string'/);
+  assert.match(APP, /t\.core = t\.core === true;/,
+    'loading a persisted Rust chat must not inherit the serving backend identity');
+  assert.match(APP, /currentTask\.core !== true && \(currentTask\.backendId \|\| currentTask\.msgs\.length > 0\)/,
+    'core work must start in a new task instead of relabelling Rust history');
+
+  for (const route of ['/api/agent/start', '/api/agent/poll', '/api/agent/approve', '/api/agent/cancel']) {
+    assert.ok(APP.includes(`'${route}`), `the core route ${route} is missing`);
+  }
+  const approve = slice(APP, 'function answerApproval(task, approvalId, decision)', '\n  }');
+  assert.match(approve, /if \(!isCoreTask\(task\)\)/);
+  assert.match(approve, /apiFetch\('\/api\/agent\/approve'/);
+  const stop = slice(APP, 'async function stopTask()', '\n  }');
+  assert.match(stop, /if \(isCoreTask\(task\)\)/);
+  assert.match(stop, /apiFetch\('\/api\/agent\/cancel'/);
+  assert.doesNotMatch(stop, /\/api\/tasks/);
+
+  const poll = slice(APP, 'async function pollCore(task, thinkId)', '\n  }');
+  assert.match(poll, /r\.status === 404/);
+  assert.match(poll, /markTaskDisconnected\(task, gone \? EXPIRED_GONE : EXPIRED_DISCONNECTED\)/);
+  assert.match(poll, /expireApprovals\(task, EXPIRED_GONE, live\)/);
+  assert.doesNotMatch(poll, /\/api\/tasks/);
+
+  const events = slice(APP, 'function connectEvents()', '\n  }');
+  assert.match(events, /if \(!backendSupports\('events-sse'\)\)/);
+  assert.match(events, /new EventSource\(apiBase \+ '\/api\/events'\)/);
+});
+
+test('core-hosted auxiliary panels are gated at runtime', () => {
+  const gates = slice(APP, 'function applyCapabilityGates()', '\n  }');
+  for (const group of ['change-repository', 'connect-repository', 'github-account-button',
+    'obsidian-account-button', 'insp-tab-files', 'insp-tab-browser', 'permission-trigger']) {
+    assert.ok(gates.includes(`'${group}'`), `${group} is not capability-gated`);
+  }
+  assert.match(gates, /workingIn\.hidden = !repositoryAvailable/);
+  assert.match(gates, /if \(!workAvailable && inspTab !== 'overview'\) setInspTab\('overview'\)/);
+  assert.match(gates, /gateControl\(option, codingAvailable, codingReason\)/);
+  for (const guard of ['syncBackendRepositories', 'syncWorkspaceRepositories', 'refreshGithub',
+    'refreshObsidian', 'loadFmDir', 'openFmFile', 'brNavigate', 'openRepositoryDialog',
+    'bindRepository', 'createRepository', 'createRepositoryInline', 'writeObsidianNote']) {
+    const body = APP.slice(APP.indexOf(`function ${guard}(`), APP.indexOf('\n  }', APP.indexOf(`function ${guard}(`)));
+    assert.match(body, /supports(?:Repository|Github|Obsidian|Work)Controls\(\)/,
+      `${guard} can issue an unsupported request without checking capabilities`);
+  }
 });
 
 test('the PWA has no Connection tab; same-origin is the only backend', () => {
@@ -359,16 +456,18 @@ test('the outlet rows read as the native client reads them', (t) => {
   for (const [name, src] of [['egui', egui], ['gpui', gpui]]) {
     assert.match(src, /\boutlet_rows\(/, `the ${name} rail never asks the client for its rows`);
   }
-  // And each rail must ask on *any* reply from the loop. Keying the probe to the
-  // legacy payload's `app` field read a healthy Rust backend — which serves
-  // /api/outlets and identifies itself by `backend` — as "agent loop offline",
-  // which is what the gpui shell and the PWA both did until 2026-11-23.
-  assert.match(gpui, /if core_up \|\| axum \{ core\.outlets\(\) \}/,
-    'the gpui rail gates the outlets probe on the legacy health payload');
+  // And each rail must ask on a verified service reply. Guessing from a payload
+  // made an unreachable or unsupported backend look like a particular
+  // implementation; the PWA probes capabilities, while gpui probes each service
+  // and prefers core only for this informational route (never for coding).
+  assert.match(gpui, /let outlet_base = if core_up \{ bases\.core\.clone\(\) \}\s*else if rust_up \{ bases\.rust\.clone\(\) \}/,
+    'the gpui rail no longer chooses an outlet service from a health payload shape');
+  assert.match(gpui, /then\(\|\| Core \{ base: outlet_base \}\.outlets\(\)\)/,
+    'the gpui rail never probes outlets without a reachable service');
   assert.match(egui, /core0\.health\(\)[\s\S]{0,400}?core0\.outlets\(\)/,
     'the egui rail no longer probes outlets off the loop reply');
   assert.match(APP, /state\.backendConnected \? await loadOutlets\(\)/,
-    'the PWA gates the outlets probe on the legacy health payload');
+    'the PWA probes outlets only after a backend answered its capability request');
   // The pair is what the rail is keyed by, so a row that core no longer answers for
   // has to be deleted here too, not just left to render an empty line. The pattern
   // stays off a line anchor: two fields in one struct literal can split across
@@ -443,7 +542,7 @@ test('the queue keeps two compact rows visible and protects agent work', () => {
   assert.match(list, /overflow-y:\s*auto/);
   assert.doesNotMatch(css.slice(css.indexOf('.task-queue {'), css.indexOf('.task-queue-header')), /overflow-y/);
 
-  const render = slice(APP, 'function renderQueue()', '\n  }\n\n  function drainQueue');
+  const render = slice(APP, 'function renderQueue()', 'let drainingQueue = false;');
   assert.match(render, /AI · locked/);
   assert.match(render, /data-action="edit"/);
   assert.match(render, /data-action="remove"/);

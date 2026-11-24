@@ -1,15 +1,15 @@
 // Fennec Workspace — full client: persistence, backend API, SSE events, dynamic UI.
-// Endpoints used (same origin by default, configurable in Settings → Connection):
-//   GET  /health
+// Endpoints used (same origin):
+//   GET  /api/capabilities      (backend identity, protocol and advertised features)
 //   GET  /api/models            (optional; falls back to the desktop model list)
-//   POST /api/tasks             { title, user_goal, repository_id }
-//   POST /api/tasks/:id/start
-//   POST /api/tasks/:id/stop
-//   POST /api/tasks/:id/messages { content }   (text-only backend; files are inlined)
-//   GET  /api/tasks/:id         (messages, tool_events, artifacts, status)
-//   DELETE /api/tasks/:id
-//   GET  /api/events            (SSE EventEnvelope stream)
-//   GET  /api/repositories
+//   POST /api/agent/start       (supervised core run)
+//   GET  /api/agent/poll        (supervised core steps and pending approvals)
+//   POST /api/agent/approve     (answer a core approval)
+//   POST /api/agent/cancel      (cancel a core run)
+//   GET  /api/tasks/:id         (read persisted Rust chat tasks only)
+//   DELETE /api/tasks/:id       (remove a persisted Rust chat task)
+//   GET  /api/events            (SSE, only when events-sse is advertised)
+//   GET  /api/repositories      (Rust auxiliary panels)
 (function () {
   'use strict';
 
@@ -31,6 +31,15 @@
   // surfaces word them (fennec-ui/src/attention.rs renders "not used · <note>").
   const EXPIRED_ENDED = 'the run ended before an answer arrived';
   const EXPIRED_GONE = 'the loop no longer holds this question';
+  const EXPIRED_DISCONNECTED = 'the backend disconnected before an answer arrived';
+  const EXPIRED_UNSUPERVISED = 'this backend does not provide supervised approvals';
+  const CAPABILITY_PROTOCOL_VERSION = 1;
+  const CODING_FEATURES = [
+    'supervised-agent',
+    'tool-execution',
+    'per-call-approvals',
+    'agent-polling',
+  ];
 
   // ── Settings (persisted) ───────────────────────────────────────────────────
   function readSetting(key, fallback) {
@@ -49,6 +58,109 @@
     return fetch(apiBase + path, o);
   }
 
+  function parseCapabilities(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (typeof value.backend !== 'string' || !value.backend.trim()) return null;
+    if (typeof value.implementation !== 'string' || !value.implementation.trim()) return null;
+    if (value.protocol_version !== CAPABILITY_PROTOCOL_VERSION) return null;
+    if (typeof value.version !== 'string' || !value.version.trim()) return null;
+    if (!Array.isArray(value.features) || value.features.some((f) => typeof f !== 'string' || !f.trim())) return null;
+    const features = value.features.slice();
+    // A partial core contract is not a weaker core: the PWA cannot safely mix
+    // unsupervised starts, polling or approval buttons. Rust is recognized by
+    // its own identity and chat-only marker instead.
+    if (value.backend === 'fennec-core' && !CODING_FEATURES.every((feature) => features.indexOf(feature) !== -1)) return null;
+    if (value.backend === 'fennec-coding-agent'
+      && (!features.includes('chat-only') || CODING_FEATURES.some((feature) => features.includes(feature)))) return null;
+    return {
+      backend: value.backend,
+      implementation: value.implementation,
+      protocol_version: value.protocol_version,
+      version: value.version,
+      features,
+    };
+  }
+
+  function capabilityBackendKind(contract) {
+    if (!contract) return 'unknown';
+    if (contract.backend === 'fennec-coding-agent' && contract.implementation === 'rust-axum') return 'rust';
+    if (contract.backend === 'fennec-core') return 'core';
+    return 'unknown';
+  }
+
+  function backendSupports(feature) {
+    return !!(state.capabilities && state.capabilities.features.indexOf(feature) !== -1);
+  }
+
+  function supportsCoding() {
+    return CODING_FEATURES.every(backendSupports);
+  }
+
+  function isCoreTask(task) {
+    return !!(task && task.core === true && typeof task.backendId === 'string' && task.backendId);
+  }
+
+  function supportsRepositoryControls() {
+    return state.backendKind === 'rust' && backendSupports('repositories');
+  }
+
+  function supportsGithubControls() {
+    return state.backendKind === 'rust';
+  }
+
+  function supportsObsidianControls() {
+    return state.backendKind === 'rust' && backendSupports('obsidian-local-vault-write');
+  }
+
+  function supportsWorkControls() {
+    return state.backendKind === 'rust';
+  }
+
+  function codingUnavailableReason() {
+    if (state.backendKind === 'unknown') {
+      return 'Coding is unavailable: backend capabilities could not be verified. Check the backend connection and reload; your prompt has been kept.';
+    }
+    if (state.backendKind === 'rust') {
+      return 'Coding is unavailable: the Rust backend is chat-only and cannot supervise tools. Start fennec-core on 127.0.0.1:8787 and reload; your prompt has been kept.';
+    }
+    const missing = CODING_FEATURES.filter((feature) => !backendSupports(feature));
+    return 'Coding is unavailable: the backend does not advertise ' + missing.join(', ')
+      + '. Start a fennec-core build with all four coding capabilities and reload; your prompt has been kept.';
+  }
+
+  let capabilityProbe = null;
+  async function probeCapabilities() {
+    if (capabilityProbe) return capabilityProbe;
+    capabilityProbe = (async () => {
+      let reachable = false;
+      let contract = null;
+      try {
+        const response = await apiFetch('/api/capabilities', { cache: 'no-store' });
+        reachable = response.ok;
+        if (response.ok) {
+          const parsed = parseCapabilities(await response.json());
+          if (capabilityBackendKind(parsed) !== 'unknown') contract = parsed;
+        }
+      } catch (_) { /* no verified capability contract */ }
+      state.capabilities = contract;
+      state.backendKind = capabilityBackendKind(contract);
+      state.backendConnected = reachable;
+      applyCapabilityGates();
+      updateBackendStatus();
+      renderCapabilities();
+      // A refreshed contract can revoke SSE just as it can revoke a panel. Do
+      // not wait for the next health tick to close a stream we can no longer
+      // justify, and let the initial verified contract open one immediately.
+      connectEvents();
+      return contract;
+    })();
+    try {
+      return await capabilityProbe;
+    } finally {
+      capabilityProbe = null;
+    }
+  }
+
   const settings = {
     autoSave: readSetting('fennec-auto-save', 'true') !== 'false',
     notifications: readSetting('fennec-notifications', 'true') !== 'false',
@@ -63,6 +175,8 @@
     queued: [],
     inspectorOpen: readSetting('fennec-inspector-open', 'true') !== 'false',
     backendConnected: false,
+    capabilities: null,
+    backendKind: 'unknown',
     // Rendered outlet rows from /api/outlets, or null while the server has not
     // told us. Never persisted: it describes this machine, not this conversation.
     outlets: null,
@@ -206,6 +320,10 @@
         }
         state.nextId = (state.tasks.reduce((m, t) => Math.max(m, t.id || 0), 0) || 0) + 1;
         for (const t of state.tasks) {
+          // Only a run started by startCoreTask is supervised. A saved Rust chat
+          // must never inherit the current backend's identity after a reload.
+          t.core = t.core === true;
+          if (!t.core) expireApprovals(t, EXPIRED_UNSUPERVISED);
           // Runtime-only flags must never survive a reload.
           t.polling = false;
           t.finalized = false;
@@ -295,6 +413,12 @@
       const m = (task.msgs || []).find((x) => x.meta && x.meta.approvalId === a.id);
       if (m) { m.meta.status = 'expired'; m.meta.note = note; }
     }
+  }
+
+  function markTaskDisconnected(task, note) {
+    expireApprovals(task, note);
+    state.backendConnected = false;
+    updateBackendStatus();
   }
 
   function saveState() {
@@ -404,7 +528,7 @@
 
   function isWorking() {
     const t = activeTask();
-    return !!t && (t.status === 'Running' || t.status === 'Planning');
+    return !!t && LIVE_STATUSES.indexOf(t.status) !== -1;
   }
 
   function formatElapsed(ms) {
@@ -871,7 +995,13 @@
       action: 'Delete',
     });
     if (!ok) return;
-    if (tk.backendId) {
+    if (isCoreTask(tk)) {
+      apiFetch('/api/agent/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: tk.backendId }),
+      }).catch(() => {});
+    } else if (tk.backendId) {
       apiFetch('/api/tasks/' + encodeURIComponent(tk.backendId), { method: 'DELETE' }).catch(() => {});
     }
     state.tasks = state.tasks.filter((t) => t.id !== id);
@@ -888,8 +1018,9 @@
     saveState();
     renderAll();
     const tk = activeTask();
-    if (tk && (tk.status === 'Running' || tk.status === 'Planning') && tk.backendId && !tk.polling) {
-      pollTask(tk);
+    if (tk && LIVE_STATUSES.indexOf(tk.status) !== -1 && !tk.polling) {
+      if (isCoreTask(tk) && state.backendKind === 'core' && supportsCoding()) pollCore(tk);
+      else if (tk.core !== true && state.backendKind === 'rust' && tk.backendId) pollTask(tk);
     }
   }
 
@@ -1542,8 +1673,9 @@
     // attachment has no verb and no path, and asking for one is a 404.
     if (!meta.verb) return readAttachmentView(meta);
     const path = meta.path;
-    if ((await probeBackendKind()) !== 'core') {
-      return { error: 'Preview needs the core agent loop. Point Settings → Connection at fennec-core.' };
+    const contract = await probeCapabilities();
+    if (capabilityBackendKind(contract) !== 'core' || !supportsCoding()) {
+      return { error: 'Preview needs the supervised core agent loop. Start fennec-core and reload this page.' };
     }
     const root = meta.workspace || runFolder();
     const ws = root ? '&workspace=' + encodeURIComponent(root) : '';
@@ -1772,12 +1904,24 @@
     });
   }
 
-  function drainQueue() {
-    if (state.queued.length > 0 && !isWorking()) {
-      const next = state.queued.shift();
-      saveState();
-      renderQueue();
-      sendMessage(queueText(next));
+  let drainingQueue = false;
+  async function drainQueue() {
+    if (drainingQueue || !state.queued.length || isWorking()) return;
+    if (!supportsCoding()) {
+      toast(codingUnavailableReason(), 'warn');
+      return;
+    }
+    drainingQueue = true;
+    const next = state.queued[0];
+    try {
+      const started = await sendMessage(queueText(next), true);
+      if (started === true && state.queued[0] === next) {
+        state.queued.shift();
+        saveState();
+        renderQueue();
+      }
+    } finally {
+      drainingQueue = false;
     }
   }
 
@@ -2042,7 +2186,7 @@
     } else {
       sendButton.classList.remove('stop');
       sendButton.setAttribute('aria-label', 'Send');
-      sendButton.title = 'Send prompt';
+      sendButton.title = supportsCoding() ? 'Send prompt' : codingUnavailableReason();
       sendButtonIcon.textContent = '↑';
       sendButton.disabled = composerInput.value.trim().length === 0 && state.attachments.length === 0;
     }
@@ -2109,51 +2253,9 @@
     return prompt;
   }
 
-  // ── Backend conversation helpers ───────────────────────────────────────────
-  async function createBackendTask(task, prompt) {
-    const resp = await apiFetch('/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: task.title,
-        user_goal: prompt,
-        repository_id: task.repoId || 'local',
-      }),
-    });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const agentTask = await resp.json();
-    task.backendId = agentTask.id;
-    const startResp = await apiFetch('/api/tasks/' + encodeURIComponent(agentTask.id) + '/start', { method: 'POST' });
-    if (!startResp.ok) throw new Error('HTTP ' + startResp.status);
-  }
-
-  function postBackendMessage(backendId, prompt) {
-    return apiFetch('/api/tasks/' + encodeURIComponent(backendId) + '/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: prompt,
-        // Extra hints; the current backend ignores unknown fields.
-        model: currentModel,
-        permissions: PERM_MODES[permissionMode].flags,
-      }),
-    });
-  }
-
-  // ── Core supervised loop (/api/agent/*): the only backend that gates tools ──
-  // The Rust fennec-agent backend is a thin chat/event server with no approval
-  // gate; the Python core runs the supervised loop and asks before gated calls.
-  // Detect which one apiBase points at so approvals (and My Attention) are real.
-  let backendKind = null;
-  async function probeBackendKind() {
-    if (backendKind) return backendKind;
-    try {
-      const r = await apiFetch('/api/health');
-      const j = await r.json();
-      backendKind = (j && j.app) ? 'core' : 'rust';
-    } catch (_) { backendKind = 'rust'; }
-    return backendKind;
-  }
+  // ── Core supervised loop (/api/agent/*): the only coding backend ───────────
+  // Rust advertises chat-only. The PWA never creates a Rust task from a coding
+  // prompt; every start below is a core run whose task record carries core=true.
 
   // The workspace name a run is started in: the active workspace's own folder,
   // or "." meaning the core's configured root. Every delivered path is relative
@@ -2182,6 +2284,7 @@
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const j = await resp.json();
+    if (!j || typeof j.id !== 'string' || !j.id) throw new Error('Core did not return a session id');
     task.backendId = j.id;
     // The directory the run is jailed to. A delivered path is relative to it, so
     // opening one later has to name it back to the file route.
@@ -2430,23 +2533,38 @@
   }
 
   async function pollCore(task, thinkId) {
+    if (!isCoreTask(task)) {
+      if (task) {
+        expireApprovals(task, EXPIRED_UNSUPERVISED);
+        if (LIVE_STATUSES.indexOf(task.status) !== -1) {
+          noteEnd(task, 'This saved task has no supervised core session.');
+          task.status = 'Failed';
+          finalizeTask(task);
+        }
+      }
+      return;
+    }
     if (task.polling) return;
     task.polling = true;
     let after = 0;
     let attempts = 0;
+    let disconnected = false;
+    let gone = false;
     while (attempts < POLL_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       if (state.tasks.indexOf(task) === -1) { task.polling = false; return; }
       let j = null;
       try {
         const r = await apiFetch('/api/agent/poll?id=' + encodeURIComponent(task.backendId) + '&after=' + after);
+        if (r.status === 404) { gone = true; disconnected = true; break; }
         if (!r.ok) break;
         j = await r.json();
-      } catch (_) { break; }
+        if (!j || !Array.isArray(j.steps)) throw new Error('Malformed core poll response');
+      } catch (_) { disconnected = true; break; }
       const arrived = (j.steps || []).length;
       after = j.total != null ? j.total : after + arrived;
       for (const s of j.steps) applyCoreStep(task, s, thinkId);
-      const live = j.pending || [];
+      const live = Array.isArray(j.pending) ? j.pending : [];
       // A question the loop dropped was answered in another window or timed out
       // in the loop itself; either way it is no longer ours to answer, exactly
       // as the native lane treats it (fennec-desktop/src/gui_main.rs CoreEvent::Pending).
@@ -2468,7 +2586,9 @@
       if (live.length || arrived) attempts = 0; else attempts++;
     }
     if (task.status === 'Running' || task.status === 'WaitingForApproval') {
-      noteEnd(task, 'Response timed out.');
+      if (disconnected) markTaskDisconnected(task, gone ? EXPIRED_GONE : EXPIRED_DISCONNECTED);
+      noteEnd(task, gone ? EXPIRED_GONE : attempts >= POLL_MAX_ATTEMPTS ? 'Response timed out.'
+        : 'Lost contact with the backend while waiting for the response.');
       task.status = 'Failed';
       finalizeTask(task);
     }
@@ -2476,28 +2596,30 @@
   }
 
   // ── Send message ───────────────────────────────────────────────────────────
-  async function sendMessage(queuedText) {
+  async function sendMessage(queuedText, fromDrain = false) {
     const text = (queuedText != null ? queuedText : composerInput.value).trim();
     const hasAttachments = queuedText == null && state.attachments.length > 0;
-    if (!text && !hasAttachments) return;
+    if (!text && !hasAttachments) return false;
 
     const prompt = queuedText != null ? queuedText : buildPrompt(text);
     const attachments = queuedText != null ? [] : state.attachments.slice();
-
-    if (queuedText == null) {
-      composerInput.value = '';
-      state.attachments = [];
-      renderAttachmentChips();
+    const contract = await probeCapabilities();
+    if (!contract || !supportsCoding()) {
+      toast(codingUnavailableReason(), 'warn');
+      updateSendButton();
+      return false;
     }
 
-    // If AI is working, queue the prompt (strip shows above composer).
+    // If AI is working, queue the prompt (strip shows above composer). A queue
+    // drain never creates a second copy if another run started while it probed.
     if (isWorking()) {
+      if (fromDrain) return false;
       state.queued.push(queueEntry(prompt));
       state.queued = normalizeQueue(state.queued);
       saveState();
       renderQueue();
       updateSendButton();
-      return;
+      return true;
     }
 
     // A manual send while idle does not empty the queue. What waits there —
@@ -2506,8 +2628,10 @@
     // in the native shell, which never clears `queued` on send. Wiping here
     // would silently throw away work the agent asked for.
 
-    // Ensure a task exists — created only on a real send, never as a draft.
-    if (!state.activeId) {
+    // A saved Rust conversation keeps its identity. Starting core work in a new
+    // local task is the only way to avoid relabelling that history as supervised.
+    const currentTask = activeTask();
+    if (!currentTask || (currentTask.core !== true && (currentTask.backendId || currentTask.msgs.length > 0))) {
       const ws = activeWorkspace();
       state.activeId = state.nextId++;
       state.tasks.push({
@@ -2520,6 +2644,7 @@
         branch: 'main',
         msgs: [],
         backendId: null,
+        core: false,
         startedAt: Date.now(),
       });
     }
@@ -2560,27 +2685,17 @@
     renderAll();
 
     try {
-      const kind = await probeBackendKind();
-      if (kind === 'core') {
-        // Supervised loop: gates tools and asks before protected calls, so
-        // approvals (and the My Attention list) are real.
-        await startCoreTask(task, prompt);
-        saveState();
-        pollCore(task, think.id);
-      } else {
-        // Reuse the conversation's backend task so the engine keeps full history.
-        if (!task.backendId) await createBackendTask(task, prompt);
-        let msgResp = await postBackendMessage(task.backendId, prompt);
-        if (msgResp.status === 404) {
-          // Backend restarted and lost the task — recreate it.
-          task.backendId = null;
-          await createBackendTask(task, prompt);
-          msgResp = await postBackendMessage(task.backendId, prompt);
-        }
-        if (!msgResp.ok) throw new Error('HTTP ' + msgResp.status);
-        saveState();
-        pollTask(task, think.id);
+      await startCoreTask(task, prompt);
+      // Keep the composer intact until the core has accepted the run. A refused
+      // or offline start therefore leaves the user's prompt and attachments put.
+      if (queuedText == null && composerInput.value === text) {
+        composerInput.value = '';
+        state.attachments = [];
+        renderAttachmentChips();
       }
+      saveState();
+      pollCore(task, think.id);
+      return true;
     } catch (e) {
       debugLog('send failed', e);
       task.msgs = task.msgs.filter((m) => m.id !== think.id);
@@ -2590,13 +2705,15 @@
         author: 'Fennec',
         content: reachable
           ? 'Fennec engine unavailable — the core is online but the inference engine is not ready. (' + detail + ')'
-          : 'Backend offline — start fennec-agent on :8787. (' + detail + ')',
+          : 'Could not start the supervised core run. Check fennec-core and try again; your prompt has been kept. (' + detail + ')',
         kind: 'result', collapsed: false,
       });
       task.status = 'Failed';
       state.backendConnected = reachable;
+      updateBackendStatus();
       saveState();
       renderAll();
+      return false;
     }
   }
 
@@ -2678,46 +2795,51 @@
       });
     }
 
-    // Approvals → pending cards + resolved record (survives reload / poll).
-    if (!task.approvals) task.approvals = [];
-    for (const ba of (bt.approvals || [])) {
-      const resolved = !!ba.resolved;
-      const decision = resolved ? (ba.resolved.choice_id || ba.resolved.decision || null) : null;
-      let rec = task.approvals.find((x) => x.id === ba.id);
-      if (!rec) {
-        rec = {
-          id: ba.id, action: ba.action || 'action', command: ba.command || null,
-          reason: ba.reason || '', risk: ba.risk_level || 'medium',
-          status: resolved ? 'resolved' : 'pending', decision,
-        };
-        task.approvals.push(rec);
-      } else if (resolved && rec.status === 'pending') {
-        rec.status = 'resolved';
-        rec.decision = decision;
-      }
-      if (!task.msgs.some((m) => m.meta && m.meta.approvalId === ba.id)) {
-        pushMsg(task, {
-          author: 'Fennec', content: rec.command || rec.action,
-          kind: 'approval', collapsed: false,
-          ts: Date.parse(ba.created_at) || Date.now(),
-          meta: {
-            approvalId: ba.id, action: rec.action, command: rec.command,
-            reason: rec.reason, risk: rec.risk, status: rec.status, decision: rec.decision,
-          },
-        });
-      } else {
-        const m = task.msgs.find((x) => x.meta && x.meta.approvalId === ba.id);
-        // Never hand the buttons back. An answer this client already sent
-        // outranks a backend list that has not caught up with it, and a card
-        // that flipped back to pending would reappear in the run it left.
-        if (m && m.meta.status === 'resolved') {
+    // Rust history can contain legacy approval-shaped rows, but Rust has no
+    // supervised gate. Only a task started by core may turn them into questions.
+    if (task.core === true) {
+      if (!task.approvals) task.approvals = [];
+      for (const ba of (bt.approvals || [])) {
+        const resolved = !!ba.resolved;
+        const decision = resolved ? (ba.resolved.choice_id || ba.resolved.decision || null) : null;
+        let rec = task.approvals.find((x) => x.id === ba.id);
+        if (!rec) {
+          rec = {
+            id: ba.id, action: ba.action || 'action', command: ba.command || null,
+            reason: ba.reason || '', risk: ba.risk_level || 'medium',
+            status: resolved ? 'resolved' : 'pending', decision,
+          };
+          task.approvals.push(rec);
+        } else if (resolved && rec.status === 'pending') {
           rec.status = 'resolved';
-          if (rec.decision == null) rec.decision = m.meta.decision;
-        } else if (m) {
-          m.meta.status = rec.status;
-          m.meta.decision = rec.decision;
+          rec.decision = decision;
+        }
+        if (!task.msgs.some((m) => m.meta && m.meta.approvalId === ba.id)) {
+          pushMsg(task, {
+            author: 'Fennec', content: rec.command || rec.action,
+            kind: 'approval', collapsed: false,
+            ts: Date.parse(ba.created_at) || Date.now(),
+            meta: {
+              approvalId: ba.id, action: rec.action, command: rec.command,
+              reason: rec.reason, risk: rec.risk, status: rec.status, decision: rec.decision,
+            },
+          });
+        } else {
+          const m = task.msgs.find((x) => x.meta && x.meta.approvalId === ba.id);
+          // Never hand the buttons back. An answer this client already sent
+          // outranks a backend list that has not caught up with it, and a card
+          // that flipped back to pending would reappear in the run it left.
+          if (m && m.meta.status === 'resolved') {
+            rec.status = 'resolved';
+            if (rec.decision == null) rec.decision = m.meta.decision;
+          } else if (m) {
+            m.meta.status = rec.status;
+            m.meta.decision = rec.decision;
+          }
         }
       }
+    } else {
+      expireApprovals(task, EXPIRED_UNSUPERVISED);
     }
 
     task.msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -2750,10 +2872,13 @@
   }
 
   async function pollTask(task, thinkId) {
+    if (!task || task.core === true || state.backendKind !== 'rust' || !task.backendId) return;
     if (task.polling) return;
     task.polling = true;
     let attempts = 0;
     let sawMsgs = -1;
+    let disconnected = false;
+    let gone = false;
     while (attempts < POLL_MAX_ATTEMPTS) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       if (state.tasks.indexOf(task) === -1) { task.polling = false; return; } // deleted
@@ -2761,9 +2886,11 @@
       let bt = null;
       try {
         const pollResp = await apiFetch('/api/tasks/' + encodeURIComponent(task.backendId));
+        if (pollResp.status === 404) { gone = true; disconnected = true; break; }
         if (!pollResp.ok) break;
         bt = await pollResp.json();
-      } catch (_) { break; }
+        if (!bt || typeof bt !== 'object') throw new Error('Malformed Rust task response');
+      } catch (_) { disconnected = true; break; }
 
       syncBackend(task, bt);
       saveState();
@@ -2783,9 +2910,10 @@
     }
 
     // Timed out or backend unreachable.
-    if (task.status === 'Running' || task.status === 'Planning') {
+    if (LIVE_STATUSES.indexOf(task.status) !== -1) {
+      if (disconnected) markTaskDisconnected(task, gone ? EXPIRED_GONE : EXPIRED_DISCONNECTED);
       if (thinkId) task.msgs = task.msgs.filter((m) => m.id !== thinkId);
-      noteEnd(task, attempts >= POLL_MAX_ATTEMPTS
+      noteEnd(task, gone ? EXPIRED_GONE : attempts >= POLL_MAX_ATTEMPTS
         ? 'Response timed out.'
         : 'Lost contact with the backend while waiting for the response.');
       task.status = 'Failed';
@@ -2803,20 +2931,19 @@
     task.status = 'Cancelled';
     task.msgs = task.msgs.filter((m) => !(m.kind === 'think' && m.meta && m.meta.stream && (m.meta.chunks || 0) === 0));
     noteEnd(task, 'Task stopped by user.');
-    if (task.backendId) {
-      // /api/tasks/:id/stop is the Rust server's route; the core loop that gates
-      // tools is stopped by /api/agent/cancel, so asking the wrong one leaves the
-      // run burning the engine while the UI says it was cancelled.
-      const stop = (task.core || backendKind === 'core')
-        ? apiFetch('/api/agent/cancel', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: task.backendId }),
-          })
-        : apiFetch('/api/tasks/' + encodeURIComponent(task.backendId) + '/stop', { method: 'POST' });
+    if (isCoreTask(task)) {
       try {
-        await stop;
-      } catch (_) { /* offline — cancel locally */ }
+        const response = await apiFetch('/api/agent/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: task.backendId }),
+        });
+        if (response.status === 404) markTaskDisconnected(task, EXPIRED_GONE);
+      } catch (_) { markTaskDisconnected(task, EXPIRED_DISCONNECTED); }
+    } else {
+      // Saved Rust chats have no supervised cancel endpoint. Stop their local
+      // polling without inventing a core session or posting a task mutation.
+      expireApprovals(task, EXPIRED_UNSUPERVISED);
     }
     finalizeTask(task);
     toast('Task stopped.', 'info');
@@ -2826,7 +2953,11 @@
   let eventSource = null;
 
   function connectEvents() {
-    if (eventSource) { eventSource.close(); eventSource = null; }
+    if (!backendSupports('events-sse')) {
+      if (eventSource) { eventSource.close(); eventSource = null; }
+      return;
+    }
+    if (eventSource) return;
     if (!('EventSource' in window)) return;
     try {
       eventSource = new EventSource(apiBase + '/api/events');
@@ -2879,6 +3010,11 @@
         const s = String(ev.status || '').toLowerCase();
         if (s === 'complete' || s === 'cancelled' || s === 'failed') {
           if (task.status === 'Running' || task.status === 'Planning') {
+            if (task.core === true) {
+              task.status = s === 'complete' ? 'Complete' : s === 'cancelled' ? 'Cancelled' : 'Failed';
+              finalizeTask(task);
+              break;
+            }
             apiFetch('/api/tasks/' + encodeURIComponent(task.backendId))
               .then((r) => (r.ok ? r.json() : null))
               .then((bt) => {
@@ -2973,7 +3109,7 @@
       }
 
       case 'ApprovalRequested': {
-        if (!task) return;
+        if (!isCoreTask(task)) return;
         const a = payload.approval || payload;
         const id = a.approval_id || a.id || ev.event_id;
         if (!task.approvals) task.approvals = [];
@@ -3007,8 +3143,11 @@
       }
 
       case 'BackendDisconnected': {
-        state.backendConnected = false;
-        updateBackendStatus();
+        if (task) markTaskDisconnected(task, EXPIRED_DISCONNECTED);
+        else {
+          state.backendConnected = false;
+          updateBackendStatus();
+        }
         if (ev.error) toast(ev.error, 'warn');
         break;
       }
@@ -3113,6 +3252,10 @@
   async function loadFmDir(path) {
     const list = $('fm-list');
     if (!list) return;
+    if (!supportsWorkControls()) {
+      fmNote('The Files panel is available only with the Rust coding-agent backend.');
+      return;
+    }
     const seq = ++fmSeq;
     fmState.path = path || '.';
     fmState.loaded = true;
@@ -3169,6 +3312,10 @@
   // A listed file opens in the same viewer a delivered card uses — one dialog,
   // one race guard — but reads through the Rust jail route, not the core one.
   async function openFmFile(path, name) {
+    if (!supportsWorkControls()) {
+      toast('The Files panel is available only with the Rust coding-agent backend.', 'warn');
+      return;
+    }
     const seq = ++fileViewSeq;
     const dialog = $('file-viewer-dialog');
     if (!dialog) return;
@@ -3246,6 +3393,14 @@
   function brNavigate(rawUrl, push = true, auto = false) {
     const url = String(rawUrl || '').trim();
     if (!url) return;
+    if (!supportsWorkControls()) {
+      const metaEl = $('browser-meta');
+      if (metaEl) {
+        metaEl.textContent = 'The Browser panel is available only with the Rust coding-agent backend.';
+        metaEl.hidden = false;
+      }
+      return;
+    }
     const frame = $('browser-frame');
     if (!frame) return;
     const titleEl = $('browser-title');
@@ -3346,30 +3501,98 @@
     setInspTab(readSetting('fennec-insp-tab', 'overview'));
   }
 
-  // ── Backend health ─────────────────────────────────────────────────────────
+  // ── Backend capabilities ───────────────────────────────────────────────────
+  function gateControl(control, enabled, reason) {
+    if (!control) return;
+    if (control.dataset.capabilityTitle === undefined) {
+      control.dataset.capabilityTitle = control.title || '';
+    }
+    control.disabled = !enabled;
+    control.title = enabled ? control.dataset.capabilityTitle : reason;
+  }
+
+  function applyCapabilityGates() {
+    const rustReason = 'Available only with the Rust coding-agent backend.';
+    const codingReason = 'Available only when fennec-core advertises all coding capabilities.';
+    const repositoryAvailable = supportsRepositoryControls();
+    const githubAvailable = supportsGithubControls();
+    const obsidianAvailable = supportsObsidianControls();
+    const workAvailable = supportsWorkControls();
+    const codingAvailable = supportsCoding();
+
+    const workingIn = $('working-in');
+    if (workingIn) workingIn.hidden = !repositoryAvailable;
+    for (const id of ['change-repository', 'connect-repository', 'repository-create-name',
+      'repository-create-inline', 'repository-create']) {
+      gateControl($(id), repositoryAvailable, rustReason);
+    }
+    for (const id of ['github-account-button', 'github-refresh']) {
+      gateControl($(id), githubAvailable, rustReason);
+    }
+    for (const id of ['obsidian-account-button', 'obsidian-refresh', 'obsidian-note-title',
+      'obsidian-note-folder', 'obsidian-note-content', 'obsidian-note-overwrite', 'obsidian-write']) {
+      gateControl($(id), obsidianAvailable, rustReason);
+    }
+    for (const tab of document.querySelectorAll('.settings-tab')) {
+      const name = tab.dataset.tab;
+      if (name === 'github') gateControl(tab, githubAvailable, rustReason);
+      if (name === 'obsidian') gateControl(tab, obsidianAvailable, rustReason);
+    }
+
+    for (const id of ['insp-tab-files', 'insp-tab-browser', 'fm-up', 'fm-refresh',
+      'browser-url', 'browser-go', 'br-back']) {
+      gateControl($(id), workAvailable, rustReason);
+    }
+    gateControl($('browser-form'), workAvailable, rustReason);
+    if (!workAvailable && inspTab !== 'overview') setInspTab('overview');
+
+    gateControl($('permission-trigger'), codingAvailable, codingReason);
+    if (!codingAvailable && permDropdown) permDropdown.hidden = true;
+    document.querySelectorAll('.permission-option').forEach((option) => {
+      gateControl(option, codingAvailable, codingReason);
+    });
+    updateSendButton();
+  }
+
   function updateBackendStatus() {
     statusDot.setAttribute('data-state', state.backendConnected ? 'online' : 'error');
     backendStatus.textContent = state.backendConnected ? 'Backend connected' : 'Disconnected';
     renderRightPanel();
   }
 
-  async function checkHealth() {
-    try {
-      // /api/health is the one route both backends answer; /health is Rust-only,
-      // so probing it read a running core as offline.
-      const resp = await apiFetch('/api/health');
-      state.backendConnected = resp.ok;
-    } catch (_) {
-      state.backendConnected = false;
+  function resumeInterruptedTasks() {
+    for (const task of state.tasks) {
+      if (LIVE_STATUSES.indexOf(task.status) === -1 || task.polling) continue;
+      if (isCoreTask(task) && state.backendKind === 'core' && supportsCoding()) {
+        pollCore(task);
+      } else if (task.core !== true && state.backendKind === 'rust' && task.backendId) {
+        pollTask(task);
+      } else {
+        const note = state.backendKind === 'unknown' ? EXPIRED_DISCONNECTED
+          : task.core === true ? 'this saved core run cannot be resumed by the Rust backend'
+            : 'this saved Rust chat cannot be resumed by fennec-core';
+        expireApprovals(task, note);
+        task.msgs = task.msgs.filter((m) => !(m.kind === 'think' && m.meta && m.meta.stream));
+        noteEnd(task, task.backendId ? note : 'Task interrupted by page reload.');
+        task.status = 'Failed';
+        finalizeTask(task);
+      }
     }
-    // Whichever loop answers /api/health also serves /api/outlets, so the Rust
-    // backend probes the lanes too. Only no reply at all reads as offline.
+  }
+
+  async function checkHealth() {
+    await probeCapabilities();
+    // Both backends can answer the outlet probe. Unsupported or missing
+    // capabilities never turn a failed request into an assumed Rust backend.
     state.outlets = state.backendConnected ? await loadOutlets() : outletLines(null);
     updateBackendStatus();
-    // A queue that survived a page reload had no finishing run to hand it off
-    // to, so it sat at "Next" with nothing able to start it. Once the backend
-    // answers and no run is going, the head of the queue goes to work.
-    if (state.backendConnected) drainQueue();
+    if (state.backendConnected) {
+      if (supportsRepositoryControls()) syncBackendRepositories();
+      if (supportsGithubControls()) syncWorkspaceRepositories();
+    }
+    resumeInterruptedTasks();
+    if (supportsCoding()) drainQueue();
+    connectEvents();
   }
 
   // ── Models ─────────────────────────────────────────────────────────────────
@@ -3451,6 +3674,7 @@
       btn.type = 'button';
       btn.className = 'model-option' + (level.id === currentEffort ? ' active' : '');
       btn.innerHTML = `<span class="model-option-name">${escapeHtml(level.name)}</span><span class="model-option-check">✓</span>`;
+      gateControl(btn, supportsCoding(), 'Reasoning levels require the supervised fennec-core backend.');
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         currentEffort = level.id;
@@ -3521,6 +3745,7 @@
       branch: 'main',
       msgs: [],
       backendId: null,
+      core: false,
       startedAt: null,
     });
     state.activeId = id;
@@ -3668,7 +3893,13 @@
   function answerApproval(task, approvalId, decision) {
     const a = (task.approvals || []).find((x) => x.id === approvalId);
     if (!a || a.status !== 'pending') return;
-    if (!task.backendId) { toast('No backend session to answer.', 'warn'); return; }
+    if (!isCoreTask(task)) {
+      expireApprovals(task, EXPIRED_UNSUPERVISED);
+      toast('This saved task has no supervised core approval session.', 'warn');
+      saveState();
+      renderAll();
+      return;
+    }
     apiFetch('/api/agent/approve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3678,10 +3909,7 @@
         // The loop only answers a question it still holds; a 404 means this one
         // was already dropped, so the card must stop asking instead of sitting
         // in My Attention forever.
-        a.status = 'expired';
-        a.note = EXPIRED_GONE;
-        const dead = task.msgs.find((x) => x.meta && x.meta.approvalId === approvalId);
-        if (dead) { dead.meta.status = 'expired'; dead.meta.note = EXPIRED_GONE; }
+        markTaskDisconnected(task, EXPIRED_GONE);
         saveState();
         renderAll();
         throw new Error(EXPIRED_GONE);
@@ -3698,8 +3926,14 @@
       renderAll();
       toast(decision.startsWith('allow') ? 'Command approved.' : 'Command rejected.', 'good');
     }).catch((e) => {
-      if (a.status !== 'expired') toast('Could not send answer: ' + e.message, 'warn');
-      else toast('Answer did not land — ' + EXPIRED_GONE, 'warn');
+      const detail = e && e.message ? e.message : String(e);
+      if (a.status !== 'expired' && (e && e.name === 'TypeError' || /fetch|network|offline/i.test(detail))) {
+        markTaskDisconnected(task, EXPIRED_DISCONNECTED);
+        saveState();
+        renderAll();
+      }
+      if (a.status !== 'expired') toast('Could not send answer: ' + detail, 'warn');
+      else toast('Answer did not land — ' + (a.note || EXPIRED_GONE), 'warn');
     });
   }
 
@@ -3954,13 +4188,22 @@
   async function browseFolders(rel) {
     wsBrowse.rel = rel;
     wsBrowse.dirs = [];
+    if (state.backendKind === 'unknown') {
+      wsBrowse.status = 'Backend capabilities are unknown. Type a folder path instead.';
+      renderWsBrowser();
+      return;
+    }
     wsBrowse.status = 'Loading…';
     renderWsBrowser();
     try {
-      const resp = await apiFetch('/api/files?path=.&workspace=' + encodeURIComponent(rel));
+      const route = state.backendKind === 'rust'
+        ? '/api/work/files?path=.&workspace=' + encodeURIComponent(rel)
+        : '/api/files?path=.&workspace=' + encodeURIComponent(rel);
+      const resp = await apiFetch(route);
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const j = await resp.json();
       const entries = Array.isArray(j.entries) ? j.entries : [];
+      if (typeof j.root === 'string') wsBrowse.root = j.root;
       wsBrowse.dirs = entries.filter((e) => e && e.is_dir)
         .map((e) => ({ name: e.name, rel: joinRel(rel, e.path) }))
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -3975,12 +4218,6 @@
   async function openWsBrowser() {
     const panel = $('ws-folder-browser');
     panel.hidden = false;
-    if (!wsBrowse.root) {
-      try {
-        const j = await (await apiFetch('/api/health')).json();
-        wsBrowse.root = (j && j.workspace) || '';
-      } catch (_) { /* the listing still works with relative names */ }
-    }
     await browseFolders(wsBrowse.rel);
   }
 
@@ -4070,6 +4307,7 @@
   }
 
   async function syncBackendRepositories() {
+    if (!supportsRepositoryControls()) return;
     try {
       const resp = await apiFetch('/api/repositories');
       if (!resp.ok) return;
@@ -4088,6 +4326,7 @@
   }
 
   async function syncWorkspaceRepositories() {
+    if (!supportsGithubControls()) return;
     // Mirrors the desktop's sync_workspace_github_repos: an unbound workspace
     // adopts the GitHub repository of its first source folder, when it has one.
     let changed = false;
@@ -4111,7 +4350,7 @@
     const status = String(text).replace(/^GitHub\s*·\s*/, '');
     button.innerHTML = iconSvg('github') + `<span class="account-status-text">${escapeHtml(status)}</span>`;
     button.setAttribute('aria-label', 'GitHub account: ' + status);
-    button.title = 'GitHub account: ' + status;
+    button.title = button.disabled ? 'Available only with the Rust coding-agent backend.' : 'GitHub account: ' + status;
     button.classList.toggle('connected', state === 'connected');
     button.classList.toggle('error', state === 'error');
   }
@@ -4120,6 +4359,12 @@
     const accountEl = $('github-account-status');
     const listEl = $('github-repository-list');
     if (!accountEl || !listEl) return;
+    if (!supportsGithubControls()) {
+      accountEl.textContent = 'GitHub controls are unavailable on this backend.';
+      setGithubAccountButton('GitHub · unavailable', 'error');
+      repositoryHint(listEl, 'Use the Rust coding-agent backend for GitHub integration.');
+      return;
+    }
     accountEl.textContent = 'Checking GitHub authentication…';
     setGithubAccountButton('GitHub · Checking…', 'checking');
     listEl.replaceChildren();
@@ -4188,6 +4433,10 @@
   // gh account's repositories, bind one to the workspace, or create a
   // private one. Binding only writes the workspace record, nothing is pushed.
   function openRepositoryDialog() {
+    if (!supportsRepositoryControls() || !supportsGithubControls()) {
+      toast('Repository controls are available only with the Rust coding-agent backend.', 'warn');
+      return;
+    }
     const ws = activeWorkspace();
     if (!ws) { toast('Select a workspace first.', 'warn'); return; }
     const dialog = $('repository-dialog');
@@ -4221,6 +4470,10 @@
   }
 
   function bindRepository(fullName) {
+    if (!supportsGithubControls()) {
+      toast('Repository binding is available only with the Rust coding-agent backend.', 'warn');
+      return;
+    }
     const ws = activeWorkspace();
     if (!ws) return;
     ws.githubRepo = fullName;
@@ -4229,6 +4482,10 @@
   }
 
   function createRepository() {
+    if (!supportsGithubControls()) {
+      toast('Repository creation is available only with the Rust coding-agent backend.', 'warn');
+      return;
+    }
     const nameInput = $('repository-new-name');
     const dialog = $('repository-dialog');
     const name = ((nameInput && nameInput.value) || '').trim();
@@ -4251,6 +4508,10 @@
 
   // Inline create from the unbound banner: reads from the banner's input field.
   function createRepositoryInline() {
+    if (!supportsGithubControls()) {
+      toast('Repository creation is available only with the Rust coding-agent backend.', 'warn');
+      return;
+    }
     const nameInput = $('repository-create-name');
     const name = ((nameInput && nameInput.value) || '').trim();
     if (!name) { toast('Enter a repository name.', 'warn'); return; }
@@ -4271,23 +4532,23 @@
   }
 
   // Mirrors the native settings Integrations page: the static Nod bridge card
-  // plus the capability contract the Rust backend serves on /api/capabilities.
-  function refreshCapabilities() {
+  // plus the verified capability contract shared by startup and Settings.
+  function renderCapabilities() {
     const statusEl = $('capability-status');
     const featuresEl = $('capability-features');
     if (!statusEl || !featuresEl) return;
-    const unavailable = () => {
+    const contract = state.capabilities;
+    if (!contract) {
       statusEl.textContent = 'Backend capabilities are unavailable.';
-      featuresEl.textContent = 'Start fennec-agent to load integration capabilities.';
-    };
-    apiFetch('/api/capabilities')
-      .then(async (response) => (response.ok ? await response.json() : null))
-      .then((contract) => {
-        if (!contract || !contract.backend) { unavailable(); return; }
-        statusEl.textContent = contract.backend + ' ' + contract.version + ' · protocol ' + contract.protocol_version;
-        featuresEl.textContent = (contract.features || []).join(' · ');
-      })
-      .catch(unavailable);
+      featuresEl.textContent = 'Start fennec-core to load coding capabilities, or fennec-agent for Rust-only tools.';
+      return;
+    }
+    statusEl.textContent = contract.backend + ' ' + contract.version + ' · protocol ' + contract.protocol_version;
+    featuresEl.textContent = contract.features.join(' · ');
+  }
+
+  async function refreshCapabilities() {
+    await probeCapabilities();
   }
 
   function setObsidianAccountButton(text, state) {
@@ -4296,7 +4557,7 @@
     const status = String(text).replace(/^Obsidian\s*·\s*/, '');
     button.innerHTML = iconSvg('vault') + `<span class="account-status-text">${escapeHtml(status)}</span>`;
     button.setAttribute('aria-label', 'Obsidian vault: ' + status);
-    button.title = 'Obsidian vault: ' + status;
+    button.title = button.disabled ? 'Available only with the Rust coding-agent backend.' : 'Obsidian vault: ' + status;
     button.classList.toggle('connected', state === 'connected');
     button.classList.toggle('error', state === 'error');
   }
@@ -4304,6 +4565,11 @@
   async function refreshObsidian() {
     const statusEl = $('obsidian-account-status');
     if (!statusEl) return;
+    if (!supportsObsidianControls()) {
+      statusEl.textContent = 'Obsidian controls are unavailable on this backend.';
+      setObsidianAccountButton('Obsidian · unavailable', 'error');
+      return;
+    }
     statusEl.textContent = 'Checking Obsidian vault…';
     setObsidianAccountButton('Obsidian · Checking…', 'checking');
     try {
@@ -4323,6 +4589,14 @@
   }
 
   async function writeObsidianNote() {
+    if (!supportsObsidianControls()) {
+      const statusEl = $('obsidian-write-status');
+      if (statusEl) {
+        statusEl.hidden = false;
+        statusEl.textContent = 'Obsidian writes are available only with the Rust coding-agent backend.';
+      }
+      return;
+    }
     const statusEl = $('obsidian-write-status');
     const title = $('obsidian-note-title').value.trim();
     const folder = $('obsidian-note-folder').value.trim();
@@ -4681,25 +4955,10 @@
   renderWorkspaces();
   updateWorkspaceDisplay();
 
-  // Resume interrupted tasks after reload.
-  for (const t of state.tasks) {
-    if (LIVE_STATUSES.indexOf(t.status) !== -1) {
-      if (t.backendId) {
-        if (t.core) pollCore(t); else pollTask(t);
-      } else {
-        t.status = 'Failed';
-        t.msgs = t.msgs.filter((m) => !(m.kind === 'think' && m.meta && m.meta.stream));
-        pushMsg(t, { author: 'Fennec', content: 'Task interrupted by page reload.', kind: 'result', collapsed: false });
-      }
-    }
-  }
-
-  // Initial render + backend wiring
+  // Initial render + capability-gated backend wiring. checkHealth resumes only
+  // tasks whose saved backend identity matches the verified current backend.
   renderAll();
   checkHealth();
-  connectEvents();
-  syncBackendRepositories();
-  syncWorkspaceRepositories();
 
   setInterval(checkHealth, 30000);
   // The running block carries a timer, so the clock has to be redrawn while the

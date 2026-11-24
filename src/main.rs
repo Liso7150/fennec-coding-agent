@@ -20,7 +20,6 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 mod task;
-mod browser;
 mod agent;
 mod repository;
 pub mod events;
@@ -138,12 +137,7 @@ async fn main() {
             panic!("failed to bind FENNEC_AGENT_ADDR={bind_addr}: {error}")
         })
     } else {
-        // The shared agent loop (fennec-core) may already own 8787; fall back to
-        // 8788 so the coding-agent web UI can still serve and open in a browser.
-        match tokio::net::TcpListener::bind("127.0.0.1:8787").await {
-            Ok(l) => l,
-            Err(_) => tokio::net::TcpListener::bind("127.0.0.1:8788").await.unwrap(),
-        }
+        tokio::net::TcpListener::bind("127.0.0.1:8788").await.unwrap()
     };
     let addr = listener.local_addr().unwrap();
     tracing::info!("Fennec coding agent backend listening on {}", addr);
@@ -321,6 +315,7 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
         protocol_version: 1,
         version: env!("CARGO_PKG_VERSION"),
         features: &[
+            "chat-only",
             "tasks",
             "agents",
             "repositories",
@@ -847,15 +842,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capabilities_identify_the_rust_backend_and_transport_features() {
+    async fn capabilities_identify_the_chat_only_rust_backend_and_auxiliary_features() {
         let response = capabilities().await.0;
         assert_eq!(response.backend, "fennec-coding-agent");
         assert_eq!(response.implementation, "rust-axum");
         assert_eq!(response.protocol_version, 1);
+        assert_eq!(response.version, env!("CARGO_PKG_VERSION"));
+        assert!(response.features.contains(&"chat-only"));
         assert!(response.features.contains(&"events-sse"));
         assert!(response.features.contains(&"events-websocket"));
         assert!(response.features.contains(&"static-web-assets"));
         assert!(response.features.contains(&"speech-transcription"));
+        for required in [
+            "supervised-agent",
+            "tool-execution",
+            "per-call-approvals",
+            "agent-polling",
+        ] {
+            assert!(
+                !response.features.contains(&required),
+                "chat-only Rust must not advertise {required}"
+            );
+        }
     }
 
     #[tokio::test]
