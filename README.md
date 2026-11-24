@@ -1,11 +1,15 @@
-# Fennec Coding Agent
+![Fennec Coding Agent 1.0.0 — an installable, chat-first coding workspace that runs entirely against your own machine: Rust/Axum backend, plain-HTML PWA, no build step, no framework, no dependencies. 71 backend tests, 42 PWA tests, Chat and Agent modes, MIT license.](docs/hero.png)
 
-Rust web backend for the Fennec coding agent orchestration layer. Provides task lifecycle management, agent routing, repository operations, and real-time event streaming via SSE/WebSocket.
+The chat-first coding workspace: a Rust/Axum backend that owns task lifecycle, agent routing,
+repository operations, per-call approvals and event streaming, plus the plain-HTML PWA it
+serves on the same port.
+
+Working version **1.0.0**; nothing at 1.0.0 is published yet — the newest published product release is `v0.9.0`.
 
 ## Architecture
 
 ```
-Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
+Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787, fallback :8788)
                                 ↓
                            fennec-core (agent server)
                                 ↓
@@ -18,7 +22,7 @@ Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
 - Agent identities carried on every event (Fennec, OpenBot, worker roles)
 - Repository operations and Git workflow
 - Real-time event streaming (SSE + WebSocket)
-- Serves web interface on `http://127.0.0.1:8787`
+- Serves web interface on `http://127.0.0.1:8787` with `:8788` fallback
 
 **fennec-desktop**:
 - The one native window in the suite: a Rust gpui-kit application
@@ -29,10 +33,10 @@ Browser/fennec-desktop ←→ fennec-coding-agent (Rust/Axum backend on :8787)
 - Command-line interface
 - Console access to backend operations
 
-External connectors belong in `fennec-core`, not either UI surface. Nod uses the core's opt-in,
-read-only MCP endpoint; Obsidian is not integrated and must remain an external application if a
-future, explicitly approved vault connector is added. Neither surface embeds Node.js, Electron, or
-an Obsidian plugin runtime.
+Optional connectors stay outside the UI surfaces. The native Nod-compatible stdio endpoint and
+Obsidian local-vault writer live in this Rust backend: Nod exposes jailed, read-only tools, while
+Obsidian writes only beneath the configured vault; Obsidian handles login and Sync. Neither surface
+embeds Node.js, Electron, or an Obsidian plugin runtime.
 
 ## Features
 
@@ -77,7 +81,7 @@ cargo build --release --offline
 ./target/release/fennec-agent
 ```
 
-The backend starts on `127.0.0.1:8787` by default. Set `FENNEC_AGENT_ADDR` to bind the Rust/Axum server to a specific loopback address when another local service already owns the default port.
+The backend starts on `127.0.0.1:8787` by default and falls back to `127.0.0.1:8788` when that port is occupied. Set `FENNEC_AGENT_ADDR` to bind the Rust/Axum server to a specific loopback address.
 
 ## API Endpoints
 
@@ -129,31 +133,48 @@ The backend starts on `127.0.0.1:8787` by default. Set `FENNEC_AGENT_ADDR` to bi
 
 ### Dependencies
 - Rust 1.85+ (edition 2024)
-- Axum 0.7 (web framework)
+- Axum 0.7 with WebSockets (web framework)
 - Tokio (async runtime)
 - tower-http (CORS, static files, tracing)
-- fennec-client (path dependency to fennec-core)
-- fennec-economy (path dependency for context compaction)
+- fennec-client (path dependency to fennec-core) — the engine and coding-agent protocol clients
+- fennec-workspace-tools (path dependency to fennec-core) — the file, shell and search tools
+
+Context compaction is not this backend's job: the agent loop that produces long tool
+transcripts runs in `fennec-core`, which calls the `fennec-economy` crate for it.
 
 ### Testing
 ```bash
 cargo test --release --offline
 ```
 
+The lane measures 71 tests in 3 cargo targets, all written in `src/` — the count is what the command printed, not what a grep of the annotations finds, since `#[tokio::test]` functions are tests too.
+
+The front-end contract has its own lane, run with the Node test runner and needing no build:
+
+```bash
+node --test web/tests/          # 42 PWA checks: DOM contract, assets, and the parity of the Rust-rendered vocabulary
+```
+
 ### Project Structure
 ```
 src/
-  main.rs          — Axum server, routes, handlers
-  api.rs           — API response types and error handling
-  task.rs          — Task domain models
-  agent.rs         — Agent identity, capabilities, delegation
-  repository.rs    — Repository and Git state models
-  events.rs        — Event envelope and stream types
+  main.rs          — Axum server on :8787 (:8788 fallback), routes, PWA static mount
+  task.rs          — task and message domain models
+  agent.rs         — agent identity, capabilities, delegation
+  events.rs        — event envelope and stream types
+  repository.rs    — repository and Git state models
+  github.rs        — the gh-backed GitHub binding (list, create, link)
+  obsidian.rs      — Markdown writes into a configured local vault
+  browser.rs       — real-browser control for web_task
+  work.rs          — the right panel's Files and Browser tabs
+  ag_ui.rs         — AG-UI (CopilotKit) run endpoint over SSE
+  nod.rs + nod_main.rs              — fennec-nod: the MCP entry point
+  antigravity.rs + antigravity_main.rs — fennec-antigravity: the optional outlet
+  updater.rs       — silent background update, `update --experimental` for main
 web/
-  index.html       — Web interface
-  styles.css       — Fennec Night theme
-  manifest.webmanifest — PWA configuration
-  icons/           — App icons
+  index.html app.js styles.css      — the PWA: no build step, no framework
+  manifest.webmanifest service-worker.js icons/
+  tests/                            — the node --test contract checks
 ```
 
 ## Integration
