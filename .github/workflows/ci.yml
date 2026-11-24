@@ -35,7 +35,7 @@ jobs:
         run: cargo test --release
       - name: PWA tests
         working-directory: repo
-        run: node --test web/tests/
+        run: node --test "web/tests/*.test.mjs"
       - name: Build
         working-directory: repo
         run: cargo build --release

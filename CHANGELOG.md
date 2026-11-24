@@ -84,6 +84,8 @@ the suite root), not hand-maintained.
 - Fox mark replaces the shield icon; README rewritten for the Axum backend
 
 ### Fixed
+- Release CI checks out the app and its core dependency as siblings, and runs the
+  PWA suite by explicit test-file glob so Node 22 and 24 execute the same 70 checks
 - A refreshed capability contract now updates the composer's Send state and label
   immediately, so a ready core does not leave a stale “capabilities unavailable”
   tooltip; failed sends retain the prompt and queue head
