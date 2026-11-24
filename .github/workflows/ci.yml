@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: fennec-coding-agent
+          path: repo
       - uses: actions/checkout@v4
         with:
           repository: Liso7150/fennec-core
@@ -31,16 +31,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Rust tests
-        working-directory: fennec-coding-agent
+        working-directory: repo
         run: cargo test --release
       - name: PWA tests
-        working-directory: fennec-coding-agent
+        working-directory: repo
         run: node --test web/tests/
       - name: Build
-        working-directory: fennec-coding-agent
+        working-directory: repo
         run: cargo build --release
       - name: Package backend binaries
-        working-directory: fennec-coding-agent
+        working-directory: repo
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -89,7 +89,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: fennec-coding-agent-${{ matrix.os }}
-          path: fennec-coding-agent/dist/*
+          path: repo/dist/*
   release:
     if: github.ref == 'refs/tags/v1.0.0'
     needs: build-test
